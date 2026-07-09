@@ -8,7 +8,8 @@
   "author": "bjrmatos",
   "contributors": [
     "that70schris",
-    "CaffeineCat"
+    "CaffeineCat",
+    "jerami_singleton"
   ],
   "categories": [
     "Productivity"
@@ -109,6 +110,13 @@
       ]
     },
     {
+      "name": "create-element-action",
+      "title": "Create Element Action",
+      "description": "Create a reusable Hammerspoon browser action from the latest captured element",
+      "icon": "create-element-action.png",
+      "mode": "view"
+    },
+    {
       "name": "restart",
       "title": "Restart",
       "description": "Quits and restarts Hammerspoon",
@@ -128,8 +136,8 @@
     }
   ],
   "dependencies": {
-    "@raycast/api": "1.94.0",
-    "@raycast/utils": "1.19.1"
+    "@raycast/api": "^1.104.19",
+    "@raycast/utils": "^2.2.6"
   },
   "devDependencies": {
     "@raycast/eslint-config": "2.0.4",
@@ -144,6 +152,7 @@
   "scripts": {
     "build": "ray build",
     "dev": "ray develop",
+    "dev:beta": "npx @raycast/api@latest dev",
     "fix-lint": "ray lint --fix",
     "lint": "ray lint",
     "prepublishOnly": "echo \"\\n\\nIt seems like you are trying to publish the Raycast extension to npm.\\n\\nIf you did intend to publish it to npm, remove the \\`prepublishOnly\\` script and rerun \\`npm publish\\` again.\\nIf you wanted to publish it to the Raycast Store instead, use \\`npm run publish\\` instead.\\n\\n\" && exit 1",

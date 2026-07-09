@@ -1,0 +1,78 @@
+local M = {}
+
+local apps = {}
+local notifier = require("scripts.notify")
+
+local function notify(message)
+  notifier.show(message)
+end
+
+local function currentContext()
+  local app = hs.application.frontmostApplication()
+  local win = app and app:focusedWindow()
+
+  return {
+    app = app,
+    window = win,
+    bundleID = app and app:bundleID() or "",
+    name = app and app:name() or "",
+    windowTitle = win and win:title() or "",
+  }
+end
+
+function M.registerApp(appModule)
+  if type(appModule) ~= "table" then
+    return false
+  end
+
+  table.insert(apps, appModule)
+  return true
+end
+
+function M.registeredApps()
+  local ids = {}
+
+  for _, app in ipairs(apps) do
+    table.insert(ids, app.id or "unknown")
+  end
+
+  return ids
+end
+
+function M.dispatch(action)
+  local context = currentContext()
+
+  for _, app in ipairs(apps) do
+    local matches = type(app.matches) == "function" and app.matches(context)
+    local handler = app.actions and app.actions[action]
+
+    if matches and type(handler) == "function" then
+      local ok, result = pcall(handler, context)
+      if not ok then
+        notify((app.id or "Automation") .. " failed")
+        hs.printf("Automation %s.%s failed: %s", tostring(app.id), tostring(action), tostring(result))
+        return false
+      end
+
+      return result == nil and true or result
+    end
+  end
+
+  return false
+end
+
+function M.bind(bindings)
+  for _, binding in ipairs(bindings or {}) do
+    hs.hotkey.bind(binding.modifiers, binding.key, function()
+      M.dispatch(binding.action)
+    end)
+  end
+end
+
+function M.eventtap(action)
+  return function()
+    return M.dispatch(action) == true
+  end
+end
+
+return M

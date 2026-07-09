@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hammerspoon Shortcut System Map</title>
+  <style>
+    :root {
+      --ink: #202124;
+      --muted: #626b78;
+      --paper: #fbfaf7;
+      --line: #2f343b;
+      --blue: #dbeafe;
+      --green: #dcfce7;
+      --yellow: #fef3c7;
+      --red: #fee2e2;
+      --purple: #ede9fe;
+      --card: rgba(255,255,255,.76);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 20px 20px, rgba(0,0,0,.05) 1px, transparent 1px) 0 0 / 24px 24px,
+        var(--paper);
+      color: var(--ink);
+      font: 15px/1.45 ui-rounded, "SF Pro Rounded", "Avenir Next", system-ui, sans-serif;
+    }
+
+    header {
+      padding: 28px 34px 18px;
+      border-bottom: 2px solid rgba(32,33,36,.12);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(28px, 4vw, 48px);
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      max-width: 980px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+
+    button, a.button {
+      border: 2px solid var(--line);
+      background: white;
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+      box-shadow: 3px 3px 0 rgba(0,0,0,.16);
+    }
+
+    main { padding: 24px 34px 48px; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 2px solid var(--line);
+      border-radius: 18px 14px 20px 12px;
+      box-shadow: 5px 5px 0 rgba(0,0,0,.13);
+      padding: 18px;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+    }
+
+    .flow {
+      position: relative;
+      min-height: 520px;
+      overflow: hidden;
+    }
+
+    .node {
+      position: absolute;
+      border: 2px solid var(--line);
+      background: white;
+      border-radius: 18px 14px 16px 12px;
+      padding: 12px 14px;
+      box-shadow: 4px 4px 0 rgba(0,0,0,.14);
+    }
+
+    .node strong { display: block; font-size: 17px; }
+    .node small { color: var(--muted); }
+    .n1 { left: 24px; top: 30px; width: 190px; background: var(--yellow); transform: rotate(-1deg); }
+    .n2 { left: 270px; top: 30px; width: 220px; background: var(--blue); transform: rotate(.8deg); }
+    .n3 { left: 552px; top: 30px; width: 230px; background: var(--green); transform: rotate(-.6deg); }
+    .n4 { left: 94px; top: 190px; width: 270px; background: var(--purple); transform: rotate(.6deg); }
+    .n5 { left: 450px; top: 185px; width: 290px; background: var(--red); transform: rotate(-.8deg); }
+    .n6 { left: 110px; top: 370px; width: 260px; background: #fff; }
+    .n7 { left: 450px; top: 370px; width: 300px; background: #fff; }
+
+    svg.lines {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    path {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 7 6;
+    }
+
+    .apps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 22px;
+    }
+
+    .app {
+      background: rgba(255,255,255,.84);
+      border: 2px solid var(--line);
+      border-radius: 16px 12px 18px 13px;
+      padding: 14px;
+      box-shadow: 4px 4px 0 rgba(0,0,0,.12);
+    }
+
+    .app h3 {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 0 10px;
+      font-size: 18px;
+      text-transform: capitalize;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 8px;
+      border: 1.5px solid var(--line);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+      background: white;
+    }
+
+    .live { background: var(--green); }
+    .mixed, .partial, .fragile { background: var(--yellow); }
+    .pending { background: var(--red); }
+    .shell { background: var(--blue); }
+
+    .shortcut {
+      border-top: 1px dashed rgba(32,33,36,.28);
+      padding: 9px 0;
+    }
+
+    .shortcut:first-of-type { border-top: 0; }
+    .trigger {
+      display: inline-block;
+      min-width: 58px;
+      margin-right: 8px;
+      font-weight: 900;
+      font-size: 16px;
+      background: #f6f7f8;
+      border: 1.5px solid #d4d7dc;
+      border-radius: 8px;
+      padding: 2px 6px;
+      text-align: center;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 7px;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 22px;
+    }
+
+    .shape {
+      border: 2px solid var(--line);
+      background: white;
+      border-radius: 20px 13px 18px 15px;
+      padding: 16px;
+      box-shadow: 4px 4px 0 rgba(0,0,0,.12);
+    }
+
+    .shape h3 {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+
+    .shape .trigger {
+      font-size: 24px;
+      min-width: 96px;
+      margin-bottom: 10px;
+    }
+
+    details {
+      margin-top: 22px;
+      background: rgba(255,255,255,.84);
+      border: 2px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 900;
+      font-size: 18px;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-x: auto;
+      background: #111;
+      color: #f8fafc;
+      border-radius: 12px;
+      padding: 14px;
+    }
+
+    @media (max-width: 1000px) {
+      .grid, .matrix { grid-template-columns: 1fr; }
+      .apps { grid-template-columns: 1fr; }
+      .flow { min-height: 760px; }
+      .node { position: relative; left: auto; top: auto; width: auto; margin: 14px 0; transform: none; }
+      svg.lines { display: none; }
+    }
+
+    @media print {
+      body { background: white; }
+      button, .toolbar { display: none; }
+      .panel, .app, .shape, details { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hammerspoon Shortcut System Map</h1>
+    <div class="subtitle">
+      Excalidraw-style snapshot of the current app-aware shortcut stack. Source:
+      <code>shortcut-system-map.source.json</code>. Live runtime checked through Hammerspoon on 2026-07-09.
+    </div>
+    <div class="toolbar">
+      <button onclick="window.print()">Print / Save PDF</button>
+      <button onclick="copySummary()">Copy Pending Summary</button>
+      <a class="button" href="./shortcut-system-map.source.json">Open Source JSON</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid">
+      <div class="panel flow">
+        <h2>Core Flow</h2>
+        <svg class="lines" viewBox="0 0 820 520" aria-hidden="true">
+          <path d="M214 76 C235 58, 250 58, 270 76" />
+          <path d="M490 76 C515 60, 530 60, 552 78" />
+          <path d="M380 110 C330 145, 260 150, 230 190" />
+          <path d="M610 112 C600 145, 605 162, 595 185" />
+          <path d="M260 294 C258 320, 242 345, 230 370" />
+          <path d="M600 294 C600 323, 600 344, 600 370" />
+        </svg>
+        <div class="node n1"><strong>Physical Trigger</strong><small>Keyboard / Karabiner output chord</small></div>
+        <div class="node n2"><strong>Hammerspoon Hotkey</strong><small><code>hs.hotkey</code> or app eventtap</small></div>
+        <div class="node n3"><strong>Semantic Dispatch</strong><small><code>automationCore.dispatch(action)</code></small></div>
+        <div class="node n4"><strong>⌃⌥M Context Menu</strong><small>Direct universal local-app primitive: <code>AXShowMenu</code></small></div>
+        <div class="node n5"><strong>⌃⌥I Capture / Inspect</strong><small>Live element capture path for browser and local targets</small></div>
+        <div class="node n6"><strong>Per-App Module</strong><small>Finder, Eagle, Canva, KM, Notion, Codex, Chrome, Obsidian, Raycast</small></div>
+        <div class="node n7"><strong>Raycast Script Catalog</strong><small><code>local.capture-focused-element</code>, <code>local.open-context-menu</code>, Chrome scripts</small></div>
+      </div>
+
+      <div class="panel">
+        <h2>Live Global Hotkeys</h2>
+        <div class="shortcut"><span class="trigger">⌃⌥P</span> <b>primary</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥O</span> <b>secondary</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥R</span> <b>search</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥I</span> <b>inspect</b> through app dispatcher <span class="badge mixed">mixed</span></div>
+        <div class="shortcut"><span class="trigger">⌃⌥C</span> <b>copy</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥E</span> <b>elements</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥S</span> <b>shortcutS</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥V</span> <b>voicemail</b> through app dispatcher</div>
+        <div class="shortcut"><span class="trigger">⌃⌥M</span> <b>context menu</b> direct universal local primitive <span class="badge live">live</span></div>
+        <p class="note">Important: <code>⌃⌥M</code> is not routed through <code>automationCore</code> today. It is bound directly by <code>browser_automations.bindContextMenuHotkey()</code>.</p>
+      </div>
+    </section>
+
+    <section class="matrix">
+      <div class="shape">
+        <span class="trigger">⌃⌥M</span>
+        <h3>Context Menu Shape</h3>
+        <p><span class="badge live">live</span> Universal local-app menu opener.</p>
+        <p>Current: allowed local apps use <code>AXShowMenu</code> on focused/selected targets. Finder icon-view selection has proof.</p>
+        <p>Pending: second-stage menu item actions should read the open menu and press a verified <code>AXMenuItem</code>.</p>
+      </div>
+      <div class="shape">
+        <span class="trigger">⌃⌥I</span>
+        <h3>Capture / Inspect Shape</h3>
+        <p><span class="badge mixed">mixed</span> Hotkey is live, universal capture is not wired as the global default.</p>
+        <p>Current: <code>inspect</code> can arm the Chrome selector picker; local capture is available through <code>captureCurrentTarget()</code>.</p>
+        <p>Pending: route <code>⌃⌥I</code> to <code>captureCurrentTarget()</code> or add app-level <code>inspect</code> handlers per app.</p>
+      </div>
+    </section>
+
+    <section class="apps">
+      <article class="app">
+        <h3>Raycast <span class="badge fragile">fragile</span></h3>
+        <div class="shortcut"><span class="trigger">⌘B</span> Open action menu, wait for focused text <code>Search for actions</code>, type <code>st</code>.</div>
+        <div class="shortcut"><span class="trigger">⌘⌥A</span> Preferences/config flow, down 2, Return.</div>
+        <div class="shortcut"><span class="trigger">⌘⌥C</span> Preferences/config flow, down 1, Return.</div>
+        <p class="note">Failure logged: timing/focus can send <code>st</code> to main search. Current rollback types nothing if action field is not focused.</p>
+      </article>
+
+      <article class="app">
+        <h3>Finder <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥O</span> App module secondary: right-click selected target.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥M</span> Universal context menu via <code>AXShowMenu</code>.</div>
+        <p class="note">Icon-view selected file proof worked. List/column/gallery proof pending.</p>
+      </article>
+
+      <article class="app">
+        <h3>Eagle <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥O</span> Right-click selected/focused target.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥M</span> Universal context path allowed; needs more proof.</div>
+      </article>
+
+      <article class="app">
+        <h3>Canva <span class="badge partial">partial</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥O</span> Right-click selected/focused target.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥E</span> Elements action currently returns false.</div>
+        <p class="note">Needs WebView/DOM or deeper app-specific proof for Elements.</p>
+      </article>
+
+      <article class="app">
+        <h3>Obsidian <span class="badge shell">shell</span></h3>
+        <p>Registered as <code>md.obsidian</code>. No actions yet.</p>
+        <p class="note">Good next candidates: capture current note context, append to inbox, open command palette targets.</p>
+      </article>
+
+      <article class="app">
+        <h3>Keyboard Maestro <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥C</span> Copy generated shell line.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥S</span> Same shell-line copy action.</div>
+        <div class="shortcut"><span class="trigger">↑/↓</span> Clipboard switcher scrollbar nudge watcher.</div>
+      </article>
+
+      <article class="app">
+        <h3>Notion <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥V</span> Toggle near label <code>Voice Mail</code>.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥S</span> Toggle near label <code>Script</code>.</div>
+      </article>
+
+      <article class="app">
+        <h3>Codex <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">s</span> Bare key: focus keyboard shortcuts search field.</div>
+        <div class="shortcut"><span class="trigger">'</span> Bare key: click Search by keystrokes toggle.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥S</span> Focus shortcuts search via semantic action.</div>
+      </article>
+
+      <article class="app">
+        <h3>Chrome <span class="badge live">live</span></h3>
+        <div class="shortcut"><span class="trigger">⌃⌥S</span> Click visible Save button.</div>
+        <div class="shortcut"><span class="trigger">Esc</span> Click visible Close button via close watcher.</div>
+        <div class="shortcut"><span class="trigger">⌃⌥P/O/R/I</span> Chrome app actions: page navigation/search/selector capture.</div>
+      </article>
+    </section>
+
+    <details open>
+      <summary>Pending Decisions</summary>
+      <ul>
+        <li>Keep universal capture wired so <code>⌃⌥I</code> calls <code>captureCurrentTarget()</code>.</li>
+        <li>Decide whether <code>⌃⌥M</code> should stay direct or become a semantic <code>contextMenu</code> action in <code>automationCore</code>.</li>
+        <li>Add actual Obsidian app-specific actions now that the app slot exists.</li>
+        <li>Replace Raycast action-menu timing with a supported or proven focus path.</li>
+        <li>Proof Finder list/column/gallery selection behavior.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>Command-Line Surfaces</summary>
+      <pre>hs -c 'print(__SCRIPTS__.execute("local.open-context-menu"))'
+hs -c 'print(__SCRIPTS__.execute("local.capture-focused-element"))'
+hs -c 'print(__SCRIPTS__.execute("local.right-click-focused-target"))'
+hs -c 'print(__SCRIPTS__.execute("chrome.pick-selector"))'
+hs -c 'print(__SCRIPTS__.execute("automation.health"))'</pre>
+    </details>
+  </main>
+
+  <script>
+    function copySummary() {
+      const text = [
+        "Pending Hammerspoon shortcut decisions:",
+        "- Keep universal capture wired so Ctrl+Alt+I calls captureCurrentTarget.",
+        "- Decide whether Ctrl+Alt+M should stay direct or become automationCore semantic contextMenu.",
+        "- Add Obsidian app-specific actions.",
+        "- Replace Raycast action-menu timing with a supported or proven focus path.",
+        "- Proof Finder list/column/gallery selection behavior."
+      ].join("\\n");
+      navigator.clipboard.writeText(text);
+    }
+  </script>
+</body>
+</html>

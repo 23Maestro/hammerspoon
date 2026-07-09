@@ -1,0 +1,174 @@
+{
+  "title": "Hammerspoon Shortcut System Map",
+  "generatedAt": "2026-07-09",
+  "runtime": {
+    "liveConfig": "/Users/singleton23/.hammerspoon/init.lua",
+    "sourceRoot": "/Users/singleton23/Raycast/hammerspoon/assets/hammerspoon",
+    "registeredApps": [
+      "raycast",
+      "finder",
+      "eagle",
+      "canva",
+      "obsidian",
+      "keyboard_maestro",
+      "notion",
+      "codex",
+      "chrome"
+    ],
+    "liveHotkeys": [
+      { "trigger": "⌃⌥P", "semanticAction": "primary", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥O", "semanticAction": "secondary", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥R", "semanticAction": "search", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥I", "semanticAction": "inspect", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥C", "semanticAction": "copy", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥E", "semanticAction": "elements", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥S", "semanticAction": "shortcutS", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥V", "semanticAction": "voicemail", "route": "automationCore.dispatch" },
+      { "trigger": "⌃⌥M", "semanticAction": "local context menu", "route": "browser_automations.bindContextMenuHotkey" }
+    ]
+  },
+  "globalShapes": [
+    {
+      "id": "context-menu",
+      "trigger": "⌃⌥M",
+      "status": "live",
+      "meaning": "Universal local-app context menu",
+      "implementation": "__SCRIPTS__.execute('local.open-context-menu') / openFocusedLocalContextMenu",
+      "currentBehavior": "Allowed local apps use AXShowMenu on the focused or selected target. Finder has a selected icon-view preference.",
+      "pendingBehavior": "Second-stage actions should read the open menu and press verified AXMenuItem targets."
+    },
+    {
+      "id": "capture-inspect",
+      "trigger": "⌃⌥I",
+      "status": "mixed",
+      "meaning": "Capture / inspect shape",
+      "implementation": "automationCore.dispatch('inspect')",
+      "currentBehavior": "Live hotkey exists. Chrome can run the selector picker, and local capture is available through captureCurrentTarget.",
+      "pendingBehavior": "Promote captureCurrentTarget into the global capture shape so Chrome starts selector picker and local apps capture focused/context target JSON."
+    }
+  ],
+  "apps": [
+    {
+      "id": "raycast",
+      "bundleIds": ["com.raycast.macos", "com.raycast-x.macos"],
+      "status": "live with known failure",
+      "liveShortcuts": [
+        { "trigger": "⌘B", "scope": "Raycast focused", "behavior": "Open action menu with ⌘K, wait for focused text 'Search for actions', then type st", "status": "fragile" },
+        { "trigger": "⌘⌥A", "scope": "Raycast focused", "behavior": "Open preferences/config flow, move down 2, press Return", "status": "live" },
+        { "trigger": "⌘⌥C", "scope": "Raycast focused", "behavior": "Open preferences/config flow, move down 1, press Return", "status": "live" }
+      ],
+      "notes": [
+        "Action-menu search is logged as fragile: st can land in main Raycast search if action search never gets focus.",
+        "Current rollback types nothing if Search for actions is not focused within 1.5s."
+      ]
+    },
+    {
+      "id": "finder",
+      "bundleIds": ["com.apple.finder"],
+      "status": "live",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥O", "semanticAction": "secondary", "behavior": "Right-click selected Finder target from app module", "status": "live" },
+        { "trigger": "⌃⌥M", "semanticAction": "local context menu", "behavior": "AXShowMenu through universal local context primitive", "status": "live" }
+      ],
+      "notes": [
+        "Finder icon-view selected item proof worked with AXImage selected target.",
+        "List/column/gallery view still need proof."
+      ]
+    },
+    {
+      "id": "eagle",
+      "bundleIds": ["tw.ogdesign.eagle", "com.eagle.cool"],
+      "status": "live",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥O", "semanticAction": "secondary", "behavior": "Right-click selected/focused target", "status": "live" },
+        { "trigger": "⌃⌥M", "semanticAction": "local context menu", "behavior": "Universal AXShowMenu path allowed", "status": "live/pending proof" }
+      ],
+      "notes": ["Needs real Eagle proof per selection state."]
+    },
+    {
+      "id": "canva",
+      "bundleIds": ["com.canva.CanvaDesktop"],
+      "status": "partial",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥O", "semanticAction": "secondary", "behavior": "Right-click selected/focused target", "status": "live" },
+        { "trigger": "⌃⌥E", "semanticAction": "elements", "behavior": "Returns false; Canva hides toolbar controls from searchable AX tree", "status": "pending" }
+      ],
+      "notes": ["Runtime Elements selection needs WebView/DOM adapter or app-specific proof."]
+    },
+    {
+      "id": "obsidian",
+      "bundleIds": ["md.obsidian"],
+      "status": "registered shell",
+      "liveShortcuts": [],
+      "notes": ["App module is registered but has no actions yet."]
+    },
+    {
+      "id": "keyboard_maestro",
+      "bundleIds": ["com.stairways.keyboardmaestro.editor", "com.stairways.keyboardmaestro.engine"],
+      "status": "live",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥C", "semanticAction": "copy", "behavior": "Copy first generated shell script line from Keyboard Maestro script mode", "status": "live" },
+        { "trigger": "⌃⌥S", "semanticAction": "shortcutS", "behavior": "Same as copy shell line", "status": "live" },
+        { "trigger": "Up/Down watcher", "scope": "Keyboard Maestro Clipboard History Switcher", "behavior": "Nudge scrollbar every fourth arrow press", "status": "live" }
+      ],
+      "notes": ["Keyboard Maestro is the macro/variables layer that can call hs -c commands."]
+    },
+    {
+      "id": "notion",
+      "bundleIds": ["notion.id"],
+      "status": "live",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥V", "semanticAction": "voicemail", "behavior": "Click toggle near label Voice Mail", "status": "live" },
+        { "trigger": "⌃⌥S", "semanticAction": "shortcutS", "behavior": "Click toggle near label Script", "status": "live" }
+      ],
+      "notes": ["Label-relative toggle click. Needs per-page evidence when labels move."]
+    },
+    {
+      "id": "codex",
+      "bundleIds": ["com.openai.codex"],
+      "status": "live",
+      "liveShortcuts": [
+        { "trigger": "bare s", "scope": "Codex keyboard shortcuts/search view", "behavior": "Focus Search keyboard shortcuts field", "status": "live" },
+        { "trigger": "bare '", "scope": "Codex keyboard shortcuts/search view", "behavior": "Click Search by keystrokes toggle by AX frame center", "status": "live" },
+        { "trigger": "⌃⌥S", "semanticAction": "shortcutS", "behavior": "Focus Search keyboard shortcuts field", "status": "live" }
+      ],
+      "notes": ["Bare-key watcher only acts inside Codex and passes through otherwise."]
+    },
+    {
+      "id": "chrome",
+      "bundleIds": ["com.google.Chrome"],
+      "status": "live generic Chrome",
+      "liveShortcuts": [
+        { "trigger": "⌃⌥S", "semanticAction": "shortcutS", "behavior": "Click visible Save button", "status": "live generic Chrome" },
+        { "trigger": "Escape", "semanticAction": "close", "behavior": "Click visible Close button when Chrome module handles close watcher", "status": "live" },
+        { "trigger": "⌃⌥P", "semanticAction": "primary", "behavior": "Chrome primary page action", "status": "live generic Chrome" },
+        { "trigger": "⌃⌥O", "semanticAction": "secondary", "behavior": "Chrome secondary page action", "status": "live generic Chrome" },
+        { "trigger": "⌃⌥R", "semanticAction": "search", "behavior": "Chrome search action from clipboard", "status": "live generic Chrome" },
+        { "trigger": "⌃⌥I", "semanticAction": "inspect", "behavior": "Chrome selector picker with auto-click", "status": "live generic Chrome" }
+      ],
+      "notes": ["Generic Chrome module owns browser tab actions."]
+    }
+  ],
+  "raycastScripts": [
+    "automation.health",
+    "chrome.javascript-health",
+    "chrome.save",
+    "chrome.close",
+    "chrome.copy-visible-controls",
+    "chrome.click-clipboard-selector",
+    "chrome.click-clipboard-xpath",
+    "chrome.pick-selector",
+    "chrome.auto-pick-selector",
+    "chrome.copy-latest-element",
+    "local.capture-focused-element",
+    "local.open-context-menu",
+    "local.right-click-focused-target"
+  ],
+  "pending": [
+    "Keep universal capture shape so ⌃⌥I calls captureCurrentTarget.",
+    "Decide whether ⌃⌥M should remain direct browser_automations hotkey or route through automationCore as a semantic action.",
+    "Add Obsidian actions now that app registration exists.",
+    "Replace fragile Raycast action-menu timing with supported/verified focus behavior.",
+    "Proof Finder list/column/gallery selection behavior."
+  ]
+}

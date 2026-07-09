@@ -1,4 +1,4 @@
-import { ActionPanel, List, Action, Icon, Color, getPreferenceValues, closeMainWindow } from '@raycast/api'
+import { ActionPanel, List, Action, getPreferenceValues, closeMainWindow } from '@raycast/api'
 import { runAppleScript, showFailureToast, useCachedPromise } from '@raycast/utils'
 
 interface ScriptItem {
@@ -6,7 +6,54 @@ interface ScriptItem {
   name: string
   description?: string
   keywords?: string[]
+  group?: string
 }
+
+interface ScriptGroup {
+  id: string
+  title: string
+  icon: string
+  keywords: string[]
+  matches: (item: ScriptItem) => boolean
+}
+
+const SCRIPT_GROUPS: ScriptGroup[] = [
+  {
+    id: 'job-filling',
+    title: 'Job Filling',
+    icon: '💼',
+    keywords: ['job', 'work', 'history', 'education', 'application', 'career'],
+    matches: (item) => item.group === 'Job Filling' || item.id.startsWith('job-form.')
+  },
+  {
+    id: 'chrome',
+    title: 'Chrome',
+    icon: '🌐',
+    keywords: ['chrome', 'browser', 'selector', 'save'],
+    matches: (item) => item.group === 'Chrome' || item.id.startsWith('chrome.')
+  },
+  {
+    id: 'saved-browser-actions',
+    title: 'Saved Browser Actions',
+    icon: '🔗',
+    keywords: ['saved', 'browser', 'element'],
+    matches: (item) => item.group === 'Saved Browser Actions'
+  },
+  {
+    id: 'local-actions',
+    title: 'Local Actions',
+    icon: '🖥️',
+    keywords: ['local', 'app', 'accessibility', 'element'],
+    matches: (item) => item.group === 'Local Actions' || item.id.startsWith('local.')
+  },
+  {
+    id: 'Diagnostics',
+    title: 'Diagnostics',
+    icon: '🩺',
+    keywords: ['automation', 'health', 'debug'],
+    matches: (item) => item.group === 'Diagnostics' || item.id.startsWith('automation.')
+  }
+]
 
 export default function main() {
   const {
@@ -76,13 +123,67 @@ export default function main() {
     targetScripts = []
   }
 
-  const listContentEl = (
-    <List.Section title={'User Scripts'}>{renderListItems(targetScripts, revalidateScripts)}</List.Section>
-  )
-
   return (
     <List isLoading={isLoading} searchBarPlaceholder="Type to search...">
-      {listContentEl}
+      <List.Section title="Groups">{renderGroupItems(targetScripts, revalidateScripts)}</List.Section>
+    </List>
+  )
+}
+
+function renderGroupItems(items: ScriptItem[], revalidateScripts: () => void) {
+  const groupedItemIds = new Set<string>()
+
+  const groups = SCRIPT_GROUPS.map((group) => {
+    const groupItems = items.filter(group.matches)
+    groupItems.forEach((item) => groupedItemIds.add(item.id))
+    return { ...group, items: groupItems }
+  }).filter((group) => group.items.length > 0)
+
+  const otherItems = items.filter((item) => !groupedItemIds.has(item.id))
+  if (otherItems.length > 0) {
+    groups.push({
+      id: 'other',
+      title: 'Other',
+      icon: '📄',
+      keywords: ['other', 'scripts'],
+      matches: () => false,
+      items: otherItems
+    })
+  }
+
+  return groups.map((group) => (
+    <List.Item
+      key={group.id}
+      icon={group.icon}
+      title={group.title}
+      accessories={[{ text: 'Group' }]}
+      keywords={[...group.keywords, ...group.items.flatMap((item) => [item.name, ...(item.keywords ?? [])])]}
+      actions={
+        <ActionPanel>
+          <Action.Push
+            title="Open Group"
+            icon="↩️"
+            target={<ScriptGroupView title={group.title} items={group.items} revalidateScripts={revalidateScripts} />}
+          />
+          <Action title="Refresh" onAction={revalidateScripts} shortcut={{ modifiers: ['cmd'], key: 'r' }} icon="🔄" />
+        </ActionPanel>
+      }
+    />
+  ))
+}
+
+function ScriptGroupView({
+  title,
+  items,
+  revalidateScripts
+}: {
+  title: string
+  items: ScriptItem[]
+  revalidateScripts: () => void
+}) {
+  return (
+    <List navigationTitle={title} searchBarPlaceholder="Type to search...">
+      <List.Section title={title}>{renderListItems(items, revalidateScripts)}</List.Section>
     </List>
   )
 }
@@ -92,7 +193,7 @@ function renderListItems(items: ScriptItem[], revalidateScripts: () => void) {
     return (
       <List.Item
         key={item.id}
-        icon={{ source: Icon.Bolt, tintColor: Color.Yellow }}
+        icon="⚡️"
         title={item.name}
         keywords={item.keywords ?? []}
         subtitle={{ value: item.description, tooltip: item.description }}
@@ -100,7 +201,7 @@ function renderListItems(items: ScriptItem[], revalidateScripts: () => void) {
           <ActionPanel>
             <Action
               title="Execute Script"
-              icon={{ source: Icon.PlayFilled, tintColor: Color.Yellow }}
+              icon="▶️"
               onAction={async () => {
                 const preferences = getPreferenceValues()
 
@@ -118,8 +219,7 @@ function renderListItems(items: ScriptItem[], revalidateScripts: () => void) {
                         end
 
                         if ${preferences.scriptsVariableName} and type(${preferences.scriptsVariableName}.execute) == 'function' then
-                          ${preferences.scriptsVariableName}.execute(sanitizedId)
-                          return
+                          return ${preferences.scriptsVariableName}.execute(sanitizedId)
                         end
 
                         return hs.json.encode({ error = "Could not find scripts variable '${
@@ -156,7 +256,7 @@ function renderListItems(items: ScriptItem[], revalidateScripts: () => void) {
               title="Refresh"
               onAction={revalidateScripts}
               shortcut={{ modifiers: ['cmd'], key: 'r' }}
-              icon={Icon.RotateClockwise}
+              icon="🔄"
             />
           </ActionPanel>
         }

@@ -2,6 +2,43 @@
 
 Control 🔨 Hammerspoon directly from Raycast.
 
+## Local Automation Contract
+
+This setup has two runtime engines and three user-facing target labels.
+
+- `Website`: Chrome DOM / selector capture. Use this when the target is a webpage button, field, or element.
+- `Mac App`: macOS Accessibility capture. Use this when the target is a selected item, focused field, app button, or context menu in a native app.
+- `Web App Window`: Electron/webview app. Use a DOM/devtools adapter for saved controls. Accessibility is only for coarse app/window state, not repeatable button selection.
+
+The core rule is: capture the target with `RightCmd + I`, save the action in Raycast, then run it later through Hammerspoon. Codex is for adding or repairing adapters, not for running the shortcut every time.
+
+Current app-module lanes:
+
+- `Chrome`: website selector capture and URL-scoped clicks.
+- `Finder`: selected item -> context menu.
+- `Codex`: app-specific macOS Accessibility actions.
+- `Notion`: macOS Accessibility first; custom adapter only if needed.
+- `Keyboard Maestro`: editor/engine Accessibility helpers.
+- `Eagle`: Mac App Accessibility lane.
+  - Bundle IDs: `tw.ogdesign.eagle`, `com.eagle.cool`.
+  - Current profile: selected/focused target -> frame right-click. Needs user-present selected-item test before deeper actions.
+- `Canva`: Web App Window lane; Accessibility first.
+  - Bundle ID: `com.canva.CanvaDesktop`.
+  - Proven AX limitation: focused `Elements` tab exposes `AXRadioButton` / `AXTabButton`, `AXTitle=Elements`, `AXValue=1`, but Canva does not expose the same tab in the searchable AX tree when it is not already focused.
+  - Current menu/process check: Canva exposes no visible Inspect/Developer Tools menu item and is not running with a remote-debugging flag.
+  - `ctrl+alt+e`: intentionally returns false until a WebView/DOM adapter exists. It does not type into Canva, use command palette fallback, or click saved coordinates.
+
+Do not add a new app module until a real target proves what it needs. The first test for Mac apps is:
+
+- selected item
+- focused field
+- button by Accessibility label/role
+- context menu by `AXShowMenu`, then frame right-click fallback
+
+Button labels are not universal. A `Delete`, `Share`, or `Log In` button may expose different Accessibility names per app or website. Save repeatable actions scoped to the app bundle ID or Chrome URL, and only promote a shared helper after two or more real targets prove the same shape.
+
+For Web App Window apps like Canva and Notion, skip AX for saved controls once the app proves the target is webview-owned. The capture path should identify the front app, open or attach to that app's inspectable webview, capture selector/XPath/DOM identity, and save that instead.
+
 ✅ Requirements
 
 - Requires the installation of Hammerspoon. Go to https://www.hammerspoon.org/ to download.
