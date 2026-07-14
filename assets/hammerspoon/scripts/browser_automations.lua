@@ -3,10 +3,13 @@ local M = {}
 local CHROME_BUNDLE_ID = "com.google.Chrome"
 local LATEST_ELEMENT_PATH = hs.configdir .. "/browser_element_latest.json"
 local LOCAL_LATEST_ELEMENT_PATH = hs.configdir .. "/local_element_latest.json"
+local LIVE_LATEST_ELEMENT_PATH = hs.configdir .. "/live_element_latest.json"
 local ELEMENT_ACTIONS_PATH = hs.configdir .. "/browser_element_actions.json"
 local clipboardText
 local catalog = {}
 local notifier = require("scripts.notify")
+local liveInspectorTimer
+local liveInspectorSignature = ""
 
 local function appleScriptString(value)
   return '"' .. tostring(value):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -110,6 +113,34 @@ local function axAttribute(element, attribute)
   return tostring(value)
 end
 
+local function axRawAttribute(element, attribute)
+  if not element then
+    return nil
+  end
+
+  local ok, value = pcall(function()
+    return element:attributeValue(attribute)
+  end)
+
+  return ok and value or nil
+end
+
+local function plainRect(rect)
+  if not rect then
+    return nil
+  end
+
+  local x = tonumber(rect.x)
+  local y = tonumber(rect.y)
+  local w = tonumber(rect.w)
+  local h = tonumber(rect.h)
+  if not x or not y or not w or not h then
+    return nil
+  end
+
+  return { x = x, y = y, w = w, h = h }
+end
+
 local function axFrame(element)
   if not element then
     return nil
@@ -117,18 +148,21 @@ local function axFrame(element)
 
   local frame = element:attributeValue("AXFrame")
   if frame then
-    return frame
+    local normalized = plainRect(frame)
+    if normalized then
+      return normalized
+    end
   end
 
   local position = element:attributeValue("AXPosition")
   local size = element:attributeValue("AXSize")
   if position and size then
-    return {
+    return plainRect({
       x = position.x,
       y = position.y,
       w = size.w,
       h = size.h,
-    }
+    })
   end
 
   return nil
@@ -610,6 +644,7 @@ function M.pickSelector(options)
       hs.eventtap.keyStroke({ "ctrl", "alt" }, "return", 0)
       hs.timer.doAfter(0.8, function()
         if persistLatestElement() then
+          hs.distributednotifications.post("com.singleton23.XSpoon.captureUpdated")
           notify("Element Captured")
         else
           notify("Element Copy Pending")
@@ -639,7 +674,7 @@ local function localElementPayload(element, captureMethod)
   local app = hs.application.frontmostApplication()
   local win = app and app:focusedWindow()
   local frame = axFrame(element)
-  local windowFrame = win and win:frame()
+  local windowFrame = plainRect(win and win:frame())
 
   return {
     kind = "hammerspoon-local-element",
@@ -659,6 +694,117 @@ local function localElementPayload(element, captureMethod)
   }
 end
 
+local function liveElementPayload(element, point)
+  local pid = element and element:pid()
+  local app = pid and hs.application.applicationForPID(pid) or nil
+  local bundleID = app and app:bundleID() or ""
+  if bundleID == "com.singleton23.XSpoon" then
+    return nil
+  end
+
+  local window = axRawAttribute(element, "AXWindow")
+  local actions = {}
+  local actionsOk, actionNames = pcall(function()
+    return element:actionNames()
+  end)
+  if actionsOk and type(actionNames) == "table" then
+    actions = actionNames
+  end
+
+  return {
+    kind = "hammerspoon-live-element",
+    captureMethod = "live-hover",
+    appName = app and app:name() or "Unknown App",
+    bundleID = bundleID,
+    appPath = app and app:path() or "",
+    windowTitle = axAttribute(window, "AXTitle"),
+    role = axAttribute(element, "AXRole"),
+    subrole = axAttribute(element, "AXSubrole"),
+    axTitle = axAttribute(element, "AXTitle"),
+    axValue = axAttribute(element, "AXValue"),
+    axDescription = axAttribute(element, "AXDescription"),
+    axPlaceholder = axAttribute(element, "AXPlaceholderValue"),
+    axHelp = axAttribute(element, "AXHelp"),
+    actions = actions,
+    frame = axFrame(element) or { x = point.x, y = point.y, w = 1, h = 1 },
+    windowFrame = axFrame(window),
+    capturedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+  }
+end
+
+local function writeLiveElement(payload)
+  local encoded, encodeError = hs.json.encode(payload, true)
+  if not encoded then
+    hs.printf("XSpoon live payload encode failed: %s", tostring(encodeError))
+    return false
+  end
+
+  local temporaryPath = LIVE_LATEST_ELEMENT_PATH .. ".tmp"
+  local file = io.open(temporaryPath, "w")
+  if not file then
+    hs.printf("XSpoon live payload write failed: %s", temporaryPath)
+    return false
+  end
+
+  file:write(encoded)
+  file:close()
+  return os.rename(temporaryPath, LIVE_LATEST_ELEMENT_PATH) ~= nil
+end
+
+local function updateLiveInspector()
+  local point = hs.mouse.absolutePosition()
+  local element = hs.axuielement.systemElementAtPosition(point)
+  if not element then
+    return
+  end
+
+  local payload = liveElementPayload(element, point)
+  if not payload then
+    return
+  end
+
+  local frame = payload.frame or {}
+  local signature = table.concat({
+    payload.bundleID or "",
+    payload.role or "",
+    payload.subrole or "",
+    payload.axTitle or "",
+    payload.axValue or "",
+    payload.axDescription or "",
+    tostring(frame.x or 0),
+    tostring(frame.y or 0),
+    tostring(frame.w or 0),
+    tostring(frame.h or 0),
+  }, "\0")
+
+  if signature == liveInspectorSignature then
+    return
+  end
+
+  if writeLiveElement(payload) then
+    liveInspectorSignature = signature
+    hs.distributednotifications.post("com.singleton23.XSpoon.liveElementUpdated")
+  end
+end
+
+function M.toggleLiveInspector()
+  if liveInspectorTimer then
+    liveInspectorTimer:stop()
+    liveInspectorTimer = nil
+    liveInspectorSignature = ""
+    return hs.json.encode({ status = "live-inspector-stopped" })
+  end
+
+  liveInspectorSignature = ""
+  liveInspectorTimer = hs.timer.doEvery(0.12, updateLiveInspector)
+  updateLiveInspector()
+  return hs.json.encode({ status = "live-inspector-started", path = LIVE_LATEST_ELEMENT_PATH })
+end
+
+function M.liveInspectorActive()
+  return liveInspectorTimer ~= nil
+end
+
 function M.captureFocusedLocalElement()
   local system = hs.axuielement.systemWideElement()
   local focused = system and system:attributeValue("AXFocusedUIElement")
@@ -672,7 +818,14 @@ function M.captureFocusedLocalElement()
   end
 
   local payload = localElementPayload(element, target and "context-target" or "focused")
-  local encoded = hs.json.encode(payload, true)
+  local encoded, encodeError = hs.json.encode(payload, true)
+  if not encoded then
+    return hs.json.encode({
+      error = "Could not encode local element JSON",
+      message = tostring(encodeError or "Unsupported Accessibility value"),
+    })
+  end
+
   local file = io.open(LOCAL_LATEST_ELEMENT_PATH, "w")
 
   if not file then
@@ -682,6 +835,7 @@ function M.captureFocusedLocalElement()
   file:write(encoded)
   file:close()
   hs.pasteboard.setContents(encoded)
+  hs.distributednotifications.post("com.singleton23.XSpoon.captureUpdated")
   notify("Local Element Captured")
   return hs.json.encode({ status = "captured-local-element", path = LOCAL_LATEST_ELEMENT_PATH })
 end
@@ -1712,7 +1866,14 @@ end
 function M.bindHotkeys()
   M.bindContextMenuHotkey()
   hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
-    M.captureCurrentTarget()
+    hs.distributednotifications.post("com.singleton23.XSpoon.toggleMenu")
+  end)
+  hs.hotkey.bind({ "ctrl", "alt" }, "o", function()
+    M.toggleLiveInspector()
+    hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
+  end)
+  hs.hotkey.bind({ "ctrl", "alt" }, "e", function()
+    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
   end)
 
   M.bindElementActionHotkeys()
