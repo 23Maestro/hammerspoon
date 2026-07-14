@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="XSpoonMenu Dark">
+  <path d="M256 78 92 256l164 178V78Z" fill="#ff4b45"/>
+  <path d="M256 78v356l164-178L256 78Z" fill="#f2f4f7"/>
+  <path d="m92 256 104 52v-36c0-14 11-25 25-25h35v-49h-35c-14 0-25-11-25-25v-36L92 256Z" fill="#c92825"/>
+  <path d="m420 256-104-52v36c0 14-11 25-25 25h-35v49h35c14 0 25 11 25 25v36l104-119Z" fill="#bfc5ce"/>
+  <path d="M256 78v356" stroke="#39d4f5" stroke-width="6" opacity=".95"/>
+</svg>

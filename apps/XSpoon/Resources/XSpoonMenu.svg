@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="XSpoonMenu">
+  <path d="M256 78 92 256l164 178V78Z" fill="#e33632"/>
+  <path d="M256 78v356l164-178L256 78Z" fill="#30343d"/>
+  <path d="m92 256 104 52v-36c0-14 11-25 25-25h35v-49h-35c-14 0-25-11-25-25v-36L92 256Z" fill="#a71e1c"/>
+  <path d="m420 256-104-52v36c0 14-11 25-25 25h-35v49h35c14 0 25 11 25 25v36l104-119Z" fill="#151820"/>
+  <path d="M256 78v356" stroke="#20bde8" stroke-width="6" opacity=".9"/>
+</svg>
