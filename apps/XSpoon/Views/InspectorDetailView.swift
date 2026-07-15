@@ -15,7 +15,7 @@ struct InspectorDetailView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .navigationTitle(store.snapshot?.text ?? "No Element Selected")
+        .navigationTitle("")
         .tint(XSpoonTheme.cyan)
     }
 
@@ -39,14 +39,6 @@ struct InspectorDetailView: View {
                 }
             }
             Spacer()
-            Button { store.toggleInspecting() } label: {
-                Label(store.isInspecting ? "Stop" : "Inspect", systemImage: store.isInspecting ? "stop.circle" : "scope")
-            }
-                .buttonStyle(.borderedProminent)
-            Button { store.capture() } label: {
-                Label("Capture", systemImage: "target")
-            }
-                .buttonStyle(.bordered)
         }
     }
 

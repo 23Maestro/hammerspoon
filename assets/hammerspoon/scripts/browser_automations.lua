@@ -84,6 +84,15 @@ local function jsString(value)
   return encoded:sub(2, -2)
 end
 
+local function systemPasteText(value)
+  local previous = hs.pasteboard.getContents()
+  hs.pasteboard.setContents(tostring(value or ""))
+  hs.osascript.applescript('tell application "System Events" to keystroke "v" using command down')
+  hs.timer.doAfter(0.3, function()
+    hs.pasteboard.setContents(previous or "")
+  end)
+end
+
 local function notify(message)
   notifier.show(message)
 end
@@ -805,6 +814,23 @@ function M.liveInspectorActive()
   return liveInspectorTimer ~= nil
 end
 
+function M.copyLiveElementToClipboard()
+  local file = io.open(LIVE_LATEST_ELEMENT_PATH, "r")
+  if not file then
+    return false
+  end
+
+  local value = file:read("*a")
+  file:close()
+
+  if not value or value == "" then
+    return false
+  end
+
+  hs.pasteboard.setContents(value)
+  return true
+end
+
 function M.captureFocusedLocalElement()
   local system = hs.axuielement.systemWideElement()
   local focused = system and system:attributeValue("AXFocusedUIElement")
@@ -982,6 +1008,15 @@ local function findLocalActionElement(action)
     return nil, errorMessage
   end
 
+  local hasMatchers = (action.axRole and action.axRole ~= "")
+    or (action.axTitle and action.axTitle ~= "")
+    or (action.axValue and action.axValue ~= "")
+    or (action.axDescription and action.axDescription ~= "")
+
+  if not hasMatchers then
+    return nil, "missing-local-matchers"
+  end
+
   local function matches(element)
     if action.axRole and action.axRole ~= "" and axAttribute(element, "AXRole") ~= action.axRole then
       return false
@@ -1010,9 +1045,40 @@ local function findLocalActionElement(action)
   return walkAx(root, matches, 8), nil
 end
 
+local function clickLocalActionFrame(action)
+  local frame = action.frame
+  if type(frame) ~= "table" or not frame.x or not frame.y then
+    return nil
+  end
+
+  hs.eventtap.leftClick({
+    x = frame.x + ((frame.w or 1) / 2),
+    y = frame.y + ((frame.h or 1) / 2),
+  })
+
+  return hs.json.encode({
+    status = "clicked-local-frame",
+    appName = action.appName or "",
+    bundleID = action.appBundleID or "",
+    x = frame.x,
+    y = frame.y,
+    w = frame.w,
+    h = frame.h,
+  })
+end
+
 local function pressLocalAction(action)
   local element, errorMessage = findLocalActionElement(action)
   if not element then
+    local hasMatcher = (action.axRole and action.axRole ~= "")
+      or (action.axTitle and action.axTitle ~= "")
+      or (action.axValue and action.axValue ~= "")
+      or (action.axDescription and action.axDescription ~= "")
+    local frameResult = not hasMatcher and clickLocalActionFrame(action)
+    if frameResult then
+      return frameResult
+    end
+
     return hs.json.encode({ status = "missing-local-element", message = errorMessage or "No matching AX element" })
   end
 
@@ -1053,6 +1119,10 @@ local function readElementActions()
   return decoded
 end
 
+function M.readElementActions()
+  return readElementActions()
+end
+
 local function runElementAction(action)
   if action.variant == "local" then
     local result = pressLocalAction(action)
@@ -1089,6 +1159,14 @@ local function runElementAction(action)
   return result
 end
 
+function M.runElementAction(action)
+  if type(action) ~= "table" then
+    return false
+  end
+
+  return runElementAction(action)
+end
+
 local jobHistoryEntries = {
   prospectId = {
     companyName = "National Prospect ID",
@@ -1114,7 +1192,7 @@ local jobHistoryEntries = {
     position = "Video Editor",
     companyPhone = "",
     country = "United States of America",
-    responsibilities = "Restructured roughly 38 hours of curriculum; processed 180-200 lesson assets; led most of the migration through deterministic FFmpeg workflows; increased course assembly throughput 2-3x; eliminated export errors; standardized naming schemas; consolidated transcripts; replaced manual timelines with automated batch export pipelines; and established scalable folder architecture and encoding standards.",
+    responsibilities = "Managed over 50 hours of curriculum; processed 180-200 lesson assets; led most of the migration through deterministic FFmpeg workflows; increased course assembly throughput 2-3x; eliminated export errors; standardized naming schemas; consolidated transcripts; replaced manual timelines with automated batch export pipelines; and established scalable folder architecture and encoding standards.",
     address1 = "6 Liberty Square",
     city = "Boston",
     county = "Suffolk",
@@ -1279,7 +1357,12 @@ local function fillWorkHistory(jobKey)
   local script = ([[
 (() => {
   const job = %s;
-  const norm = (value) => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const norm = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/[*:]/g, " ")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
@@ -1288,6 +1371,18 @@ local function fillWorkHistory(jobKey)
   const labelFor = (el) => {
     const direct = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
     if (direct) return direct.innerText;
+    const ariaLabel = el.getAttribute("aria-label");
+    if (ariaLabel) return ariaLabel;
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const labelledText = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => node.innerText || node.textContent || "")
+        .join(" ");
+      if (labelledText.trim()) return labelledText;
+    }
     let p = el;
     for (let i = 0; p && i < 4; i++, p = p.parentElement) {
       const label = p.querySelector && p.querySelector("label");
@@ -1295,9 +1390,40 @@ local function fillWorkHistory(jobKey)
     }
     return "";
   };
+  const nearbyTextFor = (el) => {
+    const chunks = [];
+    let prev = el.previousElementSibling;
+    for (let i = 0; prev && i < 3; i++, prev = prev.previousElementSibling) {
+      const text = (prev.innerText || prev.textContent || "").trim();
+      if (text) chunks.push(text);
+    }
+    let p = el.parentElement;
+    for (let i = 0; p && i < 4; i++, p = p.parentElement) {
+      const text = (p.innerText || p.textContent || "").replace(el.value || "", " ").trim();
+      if (text) chunks.push(text);
+    }
+    return chunks.join(" ");
+  };
   const controls = [...document.querySelectorAll("input:not([type=hidden]), textarea, select")]
     .filter(visible)
-    .map((el) => ({ el, meta: norm([el.id, el.name, labelFor(el), el.placeholder].join(" ")) }));
+    .map((el) => {
+      const fieldMeta = norm([
+        el.id,
+        el.name,
+        el.getAttribute("autocomplete"),
+        el.getAttribute("data-testid"),
+        el.getAttribute("role"),
+        labelFor(el),
+        el.placeholder,
+      ].join(" "));
+      const contextMeta = norm(nearbyTextFor(el));
+      return {
+        el,
+        fieldMeta,
+        contextMeta,
+        meta: norm([fieldMeta, contextMeta].join(" "))
+      };
+    });
   const set = (item, value) => {
     if (value == null || value === "") return false;
     if (!item || !item.el) return false;
@@ -1308,8 +1434,18 @@ local function fillWorkHistory(jobKey)
       if (!option) return false;
       el.value = option.value;
     } else {
-      el.value = value || "";
+      if (el.tagName === "TEXTAREA") {
+        el.focus();
+        if (el.select) el.select();
+        document.execCommand("insertText", false, value || "");
+      }
+      const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, "value")?.set
+        || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set
+        || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (!el.value && setter) setter.call(el, value || "");
+      else if (!el.value) el.value = value || "";
     }
+    el.focus();
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -1345,8 +1481,6 @@ local function fillWorkHistory(jobKey)
       county: set(byId(`public-candidate-work-history-address-${i}-county`), job.county),
       state: set(byId(`public-candidate-work-history-address-${i}-us-state`), job.state),
       zip: set(byId(`public-candidate-work-history-address-${i}-zip`), job.zip),
-      startDate: set(byId(`txt-workHistory-startDate-${i}`), job.startDate),
-      endDate: set(byId(`txt-workHistory-endDate-${i}`), job.endDate),
       reason: set(byId(
         `workHistory.reasonForLeaving.${i}`,
         `workHistory.reason.${i}`,
@@ -1393,38 +1527,71 @@ local function fillWorkHistory(jobKey)
       filled
     });
   }
-  const isCompany = (item) => item.meta.includes("company name")
-    || item.meta.includes("companyname")
-    || item.meta.includes("employer name")
-    || item.meta.includes("employername")
-    || item.meta.includes("employer");
+  const hasTerm = (value, term) => term.includes(" ")
+    ? value.includes(term)
+    : value.split(" ").includes(term);
+  const hasAny = (value, words) => words.some((word) => hasTerm(value, word));
+  const hasAll = (value, words) => words.every((word) => hasTerm(value, word));
+  const companyTerms = [
+    "company name",
+    "companyname",
+    "company",
+    "employer name",
+    "employername",
+    "employer",
+    "organization name",
+    "organization",
+    "organisation",
+    "business name",
+  ];
+  const genericAutocomplete = (item) => item.fieldMeta === ""
+    || hasAny(item.fieldMeta, ["type to search", "select", "combobox"]);
+  const isCompany = (item) => (hasAny(item.fieldMeta, companyTerms)
+    || (genericAutocomplete(item) && hasAny(item.contextMeta, companyTerms)))
+    && !hasAny(item.fieldMeta, ["company url", "company website", "website", "url", "phone", "email", "reference", "supervisor"]);
   const activeIndex = controls.findIndex((item) => item.el === document.activeElement);
   let start = activeIndex >= 0 ? controls.slice(0, activeIndex + 1).map(isCompany).lastIndexOf(true) : -1;
   if (start < 0) start = controls.findIndex((item) => isCompany(item) && !item.el.value.trim());
   if (start < 0) start = controls.findIndex(isCompany);
-  if (start < 0) return JSON.stringify({ error: "No Employer or Company Name field found" });
+  if (start < 0) return JSON.stringify({
+    error: "No Employer or Company field found",
+    visibleFields: controls.slice(0, 30).map((item) => item.meta)
+  });
   let end = controls.findIndex((item, index) => index > start && isCompany(item));
   if (end < 0) end = controls.length;
   const row = controls.slice(start, end);
-  const find = (...needles) => row.find((item) => needles.every((needle) => item.meta.includes(needle)));
+  const matches = (item, needles) => hasAll(item.fieldMeta, needles) || (item.fieldMeta === "" && hasAll(item.meta, needles));
+  const find = (...needles) => row.find((item) => matches(item, needles));
   const findAny = (...groups) => groups.map((needles) => find(...needles)).find(Boolean);
+  const findSmart = (positiveGroups, negativeWords) => {
+    const blocked = negativeWords || [];
+    return positiveGroups
+      .map((needles) => row.find((item) => matches(item, needles)
+        && !blocked.some((word) => item.fieldMeta.includes(word))))
+      .find(Boolean);
+  };
   const address = find("address", "line 1") || find("address-1") || find("address 1");
+  const responsibilities = findAny(["responsibilities"], ["major", "duties"], ["describe", "duties"], ["duties"], ["job", "description"], ["work", "description"], ["description"]);
   const city = find("city");
   const county = find("county");
   const state = find("state");
   const zip = find("zip");
   const filled = {
-    companyName: set(row[0], job.companyName),
-    position: set(findAny(["position"], ["job", "title"], ["title"], ["role"]), job.position),
+    companyName: set(row[start >= 0 ? 0 : 0], job.companyName),
+    position: set(findSmart([
+      ["position held"],
+      ["position"],
+      ["job title"],
+      ["title"],
+      ["role"],
+    ], ["company", "supervisor", "reference"]), job.position),
     companyPhone: set(findAny(["company", "phone"], ["employer", "phone"], ["work", "phone"], ["phone"]), job.companyPhone),
     country: set(findAny(["country"], ["location", "country"]), job.country),
-    responsibilities: set(findAny(["responsibilities"], ["major", "duties"], ["describe", "duties"], ["duties"], ["job", "description"], ["work", "description"], ["description"]), job.responsibilities),
+    responsibilities: set(responsibilities, job.responsibilities),
     city: set(city, job.city),
     county: set(county, job.county),
     state: set(state, job.state),
     zip: set(zip, job.zip),
-    startDate: set(findAny(["start", "date"], ["start"], ["from", "date"], ["from"]), job.startDate),
-    endDate: set(findAny(["end", "date"], ["end"], ["to", "date"], ["to"]), job.endDate),
     reason: set(findAny(["reason", "leaving"], ["reason"], ["leaving"], ["separation", "reason"], ["why", "left"]), job.reason),
     referenceName: set(findAny(["supervisor", "name"], ["reference", "name"], ["manager", "name"]), job.referenceName),
     referenceEmail: set(findAny(["supervisor", "email"], ["reference", "email"], ["manager", "email"]), job.referenceEmail),
@@ -1445,6 +1612,8 @@ local function fillWorkHistory(jobKey)
       state: state && state.el.id,
       zip: zip && zip.el.id,
     },
+    descriptionId: responsibilities && responsibilities.el.id,
+    descriptionFocused: !!responsibilities,
     filled
   });
 })()
@@ -1495,7 +1664,24 @@ local function fillWorkHistory(jobKey)
       end)
     end)
   end
-  notify("Filled work history: " .. job.companyName)
+  if decodedOk and decoded and decoded.descriptionFocused and not decoded.addressFocused and job.responsibilities ~= "" then
+    hs.timer.doAfter(0.2, function()
+      local descriptionId = tostring(decoded.descriptionId or "")
+      chromeExecuteJavaScript(([[(() => {
+        const id = %s;
+        const el = id ? document.getElementById(id) : document.querySelector("textarea[name='description'], textarea[placeholder='Description']");
+        if (!el) return "missing-description";
+        el.scrollIntoView({ block: "center" });
+        el.focus();
+        if (el.select) el.select();
+        return "focused-description";
+      })()]]):format(jsString(descriptionId)), { activate = true })
+      hs.timer.doAfter(0.2, function()
+        systemPasteText(job.responsibilities)
+      end)
+    end)
+  end
+  notify("Dates: " .. tostring(job.startDate or "") .. "-" .. tostring(job.endDate or ""))
   return result
 end
 
@@ -1865,18 +2051,21 @@ end
 
 function M.bindHotkeys()
   M.bindContextMenuHotkey()
-  hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
-    hs.distributednotifications.post("com.singleton23.XSpoon.toggleMenu")
+  hs.hotkey.bind({ "ctrl", "alt" }, "0", function()
+    hs.distributednotifications.post("com.singleton23.XSpoon.openInspector")
   end)
   hs.hotkey.bind({ "ctrl", "alt" }, "o", function()
+    hs.distributednotifications.post("com.singleton23.XSpoon.toggleMenu")
+  end)
+  hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
     M.toggleLiveInspector()
     hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
   end)
   hs.hotkey.bind({ "ctrl", "alt" }, "e", function()
+    M.copyLiveElementToClipboard()
     hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
   end)
 
-  M.bindElementActionHotkeys()
 end
 
 function M.bindContextMenuHotkey()

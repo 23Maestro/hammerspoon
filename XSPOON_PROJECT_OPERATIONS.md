@@ -22,3 +22,15 @@ The local GitHub CLI is `/opt/homebrew/bin/gh`, authenticated as `23Maestro`. Th
 - Linear owns the mobile decision cockpit and links back to GitHub.
 - `gh` is the fallback for GitHub operations if the connector is unavailable.
 - Hammerspoon remains the runtime source of truth for automation behavior.
+- XSpoon app changes are not separate from this repository. When behavior crosses the app/runtime boundary, commit and push the Swift and Lua changes together.
+
+## Push Checklist
+
+Before pushing XSpoon work:
+
+```sh
+git status --short
+git diff -- apps/XSpoon assets/hammerspoon README.md XSPOON_PROJECT_OPERATIONS.md
+```
+
+Use extension-only pushes only when the diff is limited to the Raycast extension surface. If `apps/XSpoon` or `assets/hammerspoon` changed, call that out in the commit message and PR/branch summary.

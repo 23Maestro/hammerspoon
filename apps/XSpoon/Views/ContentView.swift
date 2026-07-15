@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var store: InspectorStore
     @State private var tab = 0
+    @State private var sidebarVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,6 +14,7 @@ struct ContentView: View {
                 Text("Settings").tag(2)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .padding(.horizontal, 18)
             .padding(.top, 14)
 
@@ -21,30 +23,46 @@ struct ContentView: View {
                 case 1: MyAppsSettingsView(store: store)
                 case 2: XSpoonSettingsView()
                 default:
-                    NavigationSplitView { SidebarView(store: store) } detail: { InspectorDetailView(store: store) }
+                    NavigationSplitView(columnVisibility: $sidebarVisibility) {
+                        SidebarView(store: store)
+                            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
+                    } detail: {
+                        InspectorDetailView(store: store)
+                    }
+                    .toolbar {
+                        ToolbarItemGroup(placement: .primaryAction) {
+                            Button {
+                                store.toggleInspecting()
+                            } label: {
+                                Label(store.isInspecting ? "Stop" : "Inspect", systemImage: store.isInspecting ? "stop.circle" : "scope")
+                            }
+                            .keyboardShortcut("i", modifiers: [.control, .option])
+                            .help(store.isInspecting ? "Stop inspecting" : "Inspect")
+
+                            Button {
+                                store.capture()
+                            } label: {
+                                Label("Capture", systemImage: "target")
+                            }
+                            .keyboardShortcut("e", modifiers: [.control, .option])
+                            .help("Capture element")
+                        }
+                    }
                 }
             }
         }
-        .toolbar {
-            ToolbarItemGroup {
-                Button {
-                    store.toggleInspecting()
-                } label: {
-                    Label(store.isInspecting ? "Stop Inspecting" : "Inspect", systemImage: store.isInspecting ? "stop.circle" : "scope")
-                }
-                .keyboardShortcut("o", modifiers: [.control, .option])
-
-                Button { store.capture() } label: {
-                    Label("Capture", systemImage: "target")
-                }
-                .keyboardShortcut("e", modifiers: [.control, .option])
-            }
+        .onReceive(NotificationCenter.default.publisher(for: .xspoonToggleInspectorSidebar)) { _ in
+            toggleSidebar()
         }
         .sheet(item: $store.pendingCapture) { pending in
             CreateElementSheet(pending: pending, store: store)
                 .frame(width: 520, height: 520)
         }
         .task { store.refresh() }
+    }
+
+    private func toggleSidebar() {
+        sidebarVisibility = sidebarVisibility == .detailOnly ? .all : .detailOnly
     }
 }
 
@@ -304,7 +322,7 @@ struct CreateElementSheet: View {
                         key: key.uppercased(),
                         modifierID: modifierID
                     )
-                    store.updateShortcut(shortcut, forAppID: appID)
+                    store.saveElementShortcut(shortcut, forAppID: appID, snapshot: pending.snapshot)
                     store.pendingCapture = nil
                     dismiss()
                 }
@@ -348,10 +366,10 @@ struct XSpoonSettingsView: View {
     var body: some View {
         Form {
             Section("Global shortcuts") {
-                LabeledContent("Toggle menu", value: "⌃⌥I")
-                LabeledContent("Inspect current app", value: "⌃⌥O")
+                LabeledContent("Toggle menu", value: "⌃⌥O")
+                LabeledContent("Inspect current app", value: "⌃⌥I")
                 LabeledContent("Capture element", value: "⌃⌥E")
-                LabeledContent("Open settings", value: "⌘,")
+                LabeledContent("Open inspector", value: "⌃⌥0")
             }
             Section("Hammerspoon") {
                 Text("XSpoon reads and edits the shortcut catalog while Hammerspoon remains the action engine.")

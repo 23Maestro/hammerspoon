@@ -15,7 +15,13 @@ struct XSpoonMenuApp: App {
                 Button("Settings") {
                     NotificationCenter.default.post(name: .xspoonOpenInspector, object: nil)
                 }
-                .keyboardShortcut(",", modifiers: [.command])
+                .keyboardShortcut("0", modifiers: [.control, .option])
+            }
+            CommandGroup(after: .sidebar) {
+                Button("Toggle Sidebar") {
+                    NotificationCenter.default.post(name: .xspoonToggleInspectorSidebar, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: [.command])
             }
         }
 
@@ -37,6 +43,7 @@ extension Notification.Name {
     static let xspoonToggleMenu = Notification.Name("com.singleton23.XSpoon.toggleMenu")
     static let xspoonOpenInspector = Notification.Name("com.singleton23.XSpoon.openInspector")
     static let xspoonInspectCurrentApp = Notification.Name("com.singleton23.XSpoon.inspectCurrentApp")
+    static let xspoonToggleInspectorSidebar = Notification.Name("com.singleton23.XSpoon.toggleInspectorSidebar")
     static let xspoonLiveElementUpdated = Notification.Name("com.singleton23.XSpoon.liveElementUpdated")
     static let xspoonCaptureCurrentElement = Notification.Name("com.singleton23.XSpoon.captureCurrentElement")
     static let xspoonCaptureUpdated = Notification.Name("com.singleton23.XSpoon.captureUpdated")

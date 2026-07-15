@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor
@@ -85,6 +86,7 @@ final class InspectorStore: ObservableObject {
 
         isInspecting = false
         liveSnapshot = nil
+        copySnapshotToClipboard(captured)
         let app = ensureApp(for: captured)
         let pending = PendingElementCapture(snapshot: captured, appID: app.id)
         pendingCapture = pending
@@ -108,6 +110,19 @@ final class InspectorStore: ObservableObject {
     func updateShortcut(_ shortcut: AppShortcut, forAppID appID: String) {
         guard let app = myApps.first(where: { $0.id == appID }) else { return }
         updateShortcut(shortcut, for: app)
+    }
+
+    func saveElementShortcut(_ shortcut: AppShortcut, forAppID appID: String, snapshot: ElementSnapshot) {
+        guard let app = myApps.first(where: { $0.id == appID }) else { return }
+        updateShortcut(shortcut, for: app)
+
+        do {
+            try hammerspoon.saveElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
+            _ = hammerspoon.reloadHammerspoon()
+            status = "Saved live \(app.name) shortcut"
+        } catch {
+            status = "Saved app shortcut, but live write failed: \(error.localizedDescription)"
+        }
     }
 
     func app(id: String) -> MyAppDefinition? {
@@ -140,6 +155,16 @@ final class InspectorStore: ObservableObject {
     private func persistApps() {
         guard let data = try? JSONEncoder().encode(myApps) else { return }
         UserDefaults.standard.set(data, forKey: savedAppsKey)
+    }
+
+    private func copySnapshotToClipboard(_ snapshot: ElementSnapshot) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(snapshot),
+              let value = String(data: data, encoding: .utf8) else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func ensureApp(for snapshot: ElementSnapshot) -> MyAppDefinition {

@@ -14,24 +14,22 @@ Make XSpoon a menu-bar-led control surface for Hammerspoon shortcuts, app focus,
 
 ## Decisions
 
-- `Control-Option-I`: toggle XSpoon menu.
-- `Control-Option-O`: inspect current app.
+- `Control-Option-O`: toggle XSpoon menu.
+- `Control-Option-I`: inspect current app.
 - `Control-Option-E`: capture element.
-- `Command-,`: open the settings/inspector pane.
+- `Control-Option-0`: open the inspector pane.
 - Shortcut editing uses colored modifier cards plus a one-key reader.
 - Right-side modifier labels remain visible even where Hammerspoon receives normalized modifiers.
 
 ## Ticket plan
 
-1. `task` Menu-bar lifecycle and global shortcut router: keep the menu primary, settings on demand, and move the old capture binding from `Control-Option-I` to `Control-Option-E`.
-2. `task` My Apps shortcut reader: show every app and shortcut, add System Settings, support adding/editing app entries, and persist the catalog.
-3. `prototype` Modifier card editor: support R CMD, R SHFT, TILDE, R BRKT, L BRKT, and R CTRL/OPT cards with one-key pairing.
-4. `task` Hammerspoon sync: write edited bindings into the source-of-truth config and reload Hammerspoon without touching text-trigger behavior.
+1. `task` Live inspector verification: confirm the Wooshy-style reader stays stable while moving the mouse and while capture is triggered.
+2. `task` Modifier onboarding research: review the closest per-app modifier tools and keep only the onboarding ideas that reduce setup friction.
 
 ## Blocking order
 
-Shortcut contract -> menu-bar lifecycle -> modifier editor -> Hammerspoon source sync.
+Live inspector verification -> modifier onboarding research -> final modifier UX decision.
 
 ## External tracking
 
-The GitHub connector currently cannot access `23Maestro/hammerspoon`; Linear team `23Maestro` is visible but no linked XSpoon project exists. This file is the local canonical map until repository access is corrected.
+GitHub issues `#6` and `#7` are the current Wayfinder route. The matching Linear issues live in the `XSpoon` project under team `23Maestro`.
