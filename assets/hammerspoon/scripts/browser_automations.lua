@@ -1204,6 +1204,36 @@ local function pressLocalAction(action)
     return hs.json.encode({ status = "missing-local-element", message = errorMessage or "No matching AX element" })
   end
 
+  if action.menuItemTitle and action.menuItemTitle ~= "" then
+    local showOk = pcall(function() element:performAction("AXShowMenu") end)
+    if not showOk then
+      return hs.json.encode({ status = "menu-open-failed" })
+    end
+    hs.timer.usleep(200000)
+
+    local menuItem = walkAx(element, function(child)
+      return axAttribute(child, "AXRole") == "AXMenuItem"
+        and axAttribute(child, "AXTitle") == action.menuItemTitle
+    end, 4)
+
+    if not menuItem then
+      pcall(function() element:performAction("AXCancel") end)
+      return hs.json.encode({ status = "menu-item-not-found", menuItemTitle = action.menuItemTitle })
+    end
+
+    local pressOk = pcall(function() menuItem:performAction("AXPress") end)
+    if not pressOk then
+      return hs.json.encode({ status = "menu-item-press-failed" })
+    end
+
+    return hs.json.encode({
+      status = "performed-menu-action",
+      menuItemTitle = action.menuItemTitle,
+      role = axAttribute(element, "AXRole"),
+      title = axAttribute(element, "AXTitle"),
+    })
+  end
+
   local replayAction = localReplayAction(action)
   if replayAction == "AXFocus" then
     local ok = pcall(function()

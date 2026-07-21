@@ -39,9 +39,10 @@ struct HammerspoonClient {
         executeHammerspoon("return __SCRIPTS__.captureCurrentTarget()")
     }
 
-    func saveElementAction(app: MyAppDefinition, shortcut: AppShortcut, snapshot: ElementSnapshot) throws {
+    func saveElementAction(app: MyAppDefinition, shortcut: AppShortcut, snapshot: ElementSnapshot, menuItemTitle: String? = nil) throws {
         var actions = try readElementActions()
-        let action = ElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
+        var action = ElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
+        action.menuItemTitle = menuItemTitle
         actions.removeAll { $0.id == action.id }
         actions.append(action)
         try writeElementActions(actions)
@@ -142,6 +143,7 @@ struct ElementAction: Codable, Equatable {
     var appPath: String?
     var windowTitleIncludes: String?
     var captureType: String?
+    var menuItemTitle: String?
     var axAction: String?
     var axActions: [String]?
     var axRole: String?

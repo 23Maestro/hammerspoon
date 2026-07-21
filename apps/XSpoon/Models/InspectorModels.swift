@@ -160,6 +160,7 @@ struct PendingElementCapture: Identifiable, Equatable {
     var snapshot: ElementSnapshot
     var appID: String
     var kind: AdapterKind
+    var selectedMenuItem: String?
 }
 
 struct ModifierPreset: Identifiable, Hashable {

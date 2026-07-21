@@ -278,8 +278,12 @@ struct CreateElementSheet: View {
     @State private var modifierID = ModifierCatalog.all[0].id
     @State private var readingKey = false
     @State private var monitor: Any?
+    @State private var selectedMenuItem: String?
     private var canSave: Bool {
-        pending.kind != .menuOption && !key.isEmpty
+        if pending.kind == .menuOption {
+            return selectedMenuItem != nil && !key.isEmpty
+        }
+        return !key.isEmpty
     }
 
     init(pending: PendingElementCapture, store: InspectorStore) {
@@ -310,8 +314,8 @@ struct CreateElementSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if pending.kind == .menuOption {
-                    Text("Needs two captures")
+                if pending.kind == .menuOption && store.menuItems.isEmpty {
+                    Text("Right-click the element to read its menu")
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
                 }
@@ -319,6 +323,29 @@ struct CreateElementSheet: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+
+            if pending.kind == .menuOption && !store.menuItems.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Choose a menu option").font(.headline)
+                    ForEach(store.menuItems.filter(\.enabled)) { item in
+                        Button {
+                            selectedMenuItem = item.title
+                            action = "Choose \(item.title)"
+                        } label: {
+                            HStack {
+                                Text(item.title)
+                                Spacer()
+                                if selectedMenuItem == item.title {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                            .padding(8)
+                            .background(selectedMenuItem == item.title ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
 
             Picker("App", selection: $appID) {
                 ForEach(store.myApps) { app in
@@ -375,7 +402,7 @@ struct CreateElementSheet: View {
                         key: key.uppercased(),
                         modifierID: modifierID
                     )
-                    store.saveElementShortcut(shortcut, forAppID: appID, snapshot: pending.snapshot)
+                    store.saveElementShortcut(shortcut, forAppID: appID, snapshot: pending.snapshot, menuItemTitle: selectedMenuItem)
                     store.pendingCapture = nil
                     dismiss()
                 }

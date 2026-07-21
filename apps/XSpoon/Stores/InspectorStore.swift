@@ -169,12 +169,12 @@ final class InspectorStore: ObservableObject {
         updateShortcut(shortcut, for: app)
     }
 
-    func saveElementShortcut(_ shortcut: AppShortcut, forAppID appID: String, snapshot: ElementSnapshot) {
+    func saveElementShortcut(_ shortcut: AppShortcut, forAppID appID: String, snapshot: ElementSnapshot, menuItemTitle: String? = nil) {
         guard let app = myApps.first(where: { $0.id == appID }) else { return }
         updateShortcut(shortcut, for: app)
 
         do {
-            try hammerspoon.saveElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
+            try hammerspoon.saveElementAction(app: app, shortcut: shortcut, snapshot: snapshot, menuItemTitle: menuItemTitle)
             switch hammerspoon.reloadSavedElementRoutes(actionID: shortcut.id) {
             case .success(let receipt) where receipt.contains("capture-saved-module-required"):
                 status = "Saved capture. Add app module test next."
