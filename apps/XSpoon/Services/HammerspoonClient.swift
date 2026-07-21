@@ -70,6 +70,20 @@ struct HammerspoonClient {
         try data.write(to: elementActionsURL, options: .atomic)
     }
 
+    func generateAppModule(for app: MyAppDefinition) throws {
+        guard !ModuleGenerator.isBuiltIn(app.id) else { return }
+        let modulesDir = home.appendingPathComponent(".hammerspoon/scripts/apps")
+        try FileManager.default.createDirectory(at: modulesDir, withIntermediateDirectories: true)
+        let moduleURL = modulesDir.appendingPathComponent("\(app.id).lua")
+        try ModuleGenerator.generate(app: app, to: moduleURL)
+    }
+
+    func removeAppModule(for app: MyAppDefinition) throws {
+        guard !ModuleGenerator.isBuiltIn(app.id) else { return }
+        let moduleURL = home.appendingPathComponent(".hammerspoon/scripts/apps/\(app.id).lua")
+        try? FileManager.default.removeItem(at: moduleURL)
+    }
+
     @discardableResult
     func reloadHammerspoon() -> Result<String, Error> {
         executeHammerspoon("hs.timer.doAfter(0.1, hs.reload); return 'reload-scheduled'")

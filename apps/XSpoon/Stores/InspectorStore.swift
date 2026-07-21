@@ -175,14 +175,9 @@ final class InspectorStore: ObservableObject {
 
         do {
             try hammerspoon.saveElementAction(app: app, shortcut: shortcut, snapshot: snapshot, menuItemTitle: menuItemTitle)
-            switch hammerspoon.reloadSavedElementRoutes(actionID: shortcut.id) {
-            case .success(let receipt) where receipt.contains("capture-saved-module-required"):
-                status = "Saved capture. Add app module test next."
-            case .success:
-                status = "Saved capture, but no app module owns it"
-            case .failure(let error):
-                status = "Saved capture, but Hammerspoon did not answer: \(error.localizedDescription)"
-            }
+            try hammerspoon.generateAppModule(for: app)
+            _ = hammerspoon.reloadHammerspoon()
+            status = "Saved \(app.name) shortcut"
         } catch {
             status = "Could not save capture: \(error.localizedDescription)"
         }
@@ -199,7 +194,12 @@ final class InspectorStore: ObservableObject {
             myApps[index].shortcuts.removeAll { $0.id == shortcut.id }
             addDeletedShortcutID(shortcut.id)
             persistApps()
-            _ = hammerspoon.reloadSavedElementRoutes()
+            if myApps[index].shortcuts.isEmpty {
+                try hammerspoon.removeAppModule(for: app)
+            } else {
+                try hammerspoon.generateAppModule(for: app)
+            }
+            _ = hammerspoon.reloadHammerspoon()
             status = "Deleted \(shortcut.action)"
         } catch {
             status = "Could not delete shortcut: \(error.localizedDescription)"
@@ -209,10 +209,11 @@ final class InspectorStore: ObservableObject {
     func deleteApp(_ app: MyAppDefinition) {
         do {
             try hammerspoon.deleteElementActions(for: app)
+            try hammerspoon.removeAppModule(for: app)
             myApps.removeAll { $0.id == app.id }
             addDeletedAppID(app.id)
             persistApps()
-            _ = hammerspoon.reloadSavedElementRoutes()
+            _ = hammerspoon.reloadHammerspoon()
             status = "Removed \(app.name)"
         } catch {
             status = "Could not remove app: \(error.localizedDescription)"

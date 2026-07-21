@@ -1294,6 +1294,16 @@ function M.readElementActions()
   return readElementActions()
 end
 
+function M.actionsForApp(bundleID)
+  local matched = {}
+  for _, action in ipairs(readElementActions()) do
+    if tostring(action.appBundleID or "") == bundleID then
+      table.insert(matched, action)
+    end
+  end
+  return matched
+end
+
 local function runElementAction(action)
   if action.variant == "local" then
     local result = pressLocalAction(action)
