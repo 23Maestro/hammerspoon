@@ -47,4 +47,5 @@ extension Notification.Name {
     static let xspoonLiveElementUpdated = Notification.Name("com.singleton23.XSpoon.liveElementUpdated")
     static let xspoonCaptureCurrentElement = Notification.Name("com.singleton23.XSpoon.captureCurrentElement")
     static let xspoonCaptureUpdated = Notification.Name("com.singleton23.XSpoon.captureUpdated")
+    static let xspoonMenuItemsRead = Notification.Name("com.singleton23.XSpoon.menuItemsRead")
 }

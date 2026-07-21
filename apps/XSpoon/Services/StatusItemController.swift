@@ -35,7 +35,8 @@ final class StatusItemController: NSObject {
             },
             observeDistributed(.xspoonLiveElementUpdated) { [weak self] in self?.showLiveElement() },
             observeDistributed(.xspoonCaptureCurrentElement) { [weak self] in self?.captureCurrentElement() },
-            observeDistributed(.xspoonCaptureUpdated) { [weak self] in self?.handleCaptureUpdated() }
+            observeDistributed(.xspoonCaptureUpdated) { [weak self] in self?.handleCaptureUpdated() },
+            observeDistributed(.xspoonMenuItemsRead) { [weak self] in self?.store.loadMenuItems() }
         ]
     }
 

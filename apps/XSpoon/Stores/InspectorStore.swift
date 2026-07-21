@@ -13,6 +13,7 @@ final class InspectorStore: ObservableObject {
     @Published var myApps = MyAppsCatalog.all
     @Published var liveSnapshot: ElementSnapshot?
     @Published var pendingCapture: PendingElementCapture?
+    @Published var menuItems: [MenuItemSnapshot] = []
 
     private let contextReader = AccessibilityContextReader()
     private let hammerspoon = HammerspoonClient()
@@ -68,6 +69,17 @@ final class InspectorStore: ObservableObject {
             source: latestSnapshot?.captureSource ?? currentContext.source
         )
         status = snapshot == nil ? "No captured element" : "Latest capture loaded"
+    }
+
+    func loadMenuItems() {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hammerspoon/menu_items_latest.json")
+        guard let data = try? Data(contentsOf: url),
+              let items = try? JSONDecoder().decode([MenuItemSnapshot].self, from: data) else {
+            menuItems = []
+            return
+        }
+        menuItems = items
     }
 
     func toggleInspecting() {

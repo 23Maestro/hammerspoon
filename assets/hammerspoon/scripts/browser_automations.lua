@@ -11,6 +11,7 @@ local notifier = require("scripts.notify")
 local liveInspectorTimer
 local liveInspectorCaptureTap
 local liveInspectorSignature = ""
+local MENU_ITEMS_PATH = hs.configdir .. "/menu_items_latest.json"
 
 local function appleScriptString(value)
   return '"' .. tostring(value):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -830,6 +831,7 @@ function M.toggleLiveInspector()
   liveInspectorTimer = hs.timer.doEvery(0.12, updateLiveInspector)
   liveInspectorCaptureTap = hs.eventtap.new({
     hs.eventtap.event.types.leftMouseDown,
+    hs.eventtap.event.types.rightMouseDown,
     hs.eventtap.event.types.keyDown,
   }, function(event)
     if event:getType() == hs.eventtap.event.types.keyDown then
@@ -841,7 +843,66 @@ function M.toggleLiveInspector()
       return false
     end
 
+    if event:getType() == hs.eventtap.event.types.rightMouseDown then
+      updateLiveInspector()
+      local target = localContextTarget()
+      if not target then
+        notify("No menu target")
+        return true
+      end
+
+      local items = {}
+      local showOk = pcall(function() target:performAction("AXShowMenu") end)
+      if showOk then
+        hs.timer.usleep(200000)
+        local children = target:attributeValue("AXChildren") or {}
+        for _, child in ipairs(children) do
+          local childRole = axAttribute(child, "AXRole")
+          if childRole == "AXMenu" then
+            local menuChildren = child:attributeValue("AXChildren") or {}
+            for _, item in ipairs(menuChildren) do
+              if axAttribute(item, "AXRole") == "AXMenuItem" then
+                table.insert(items, {
+                  role = "AXMenuItem",
+                  title = axAttribute(item, "AXTitle") or "",
+                  value = axAttribute(item, "AXValue"),
+                  description = axAttribute(item, "AXDescription"),
+                  enabled = item:attributeValue("AXEnabled") ~= false,
+                })
+              end
+            end
+            break
+          end
+        end
+        pcall(function() target:performAction("AXCancel") end)
+      end
+
+      if #items > 0 then
+        local encoded = hs.json.encode(items, true)
+        local menuFile = io.open(MENU_ITEMS_PATH, "w")
+        if menuFile then
+          menuFile:write(encoded)
+          menuFile:close()
+        end
+        notify(tostring(#items) .. " menu items")
+        hs.distributednotifications.post("com.singleton23.XSpoon.menuItemsRead")
+      else
+        notify("No menu items found")
+      end
+      return true
+    end
+
     updateLiveInspector()
+    local title = "element"
+    local file = io.open(LIVE_LATEST_ELEMENT_PATH, "r")
+    if file then
+      local ok, data = pcall(hs.json.decode, file:read("*a"))
+      file:close()
+      if ok and data then
+        title = data.axTitle or data.title or data.axDescription or "element"
+      end
+    end
+    notify("Captured " .. tostring(title):sub(1, 30))
     stopLiveInspector()
     hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
     return true

@@ -124,6 +124,15 @@ struct SnapshotRect: Codable, Equatable {
     var h: Double
 }
 
+struct MenuItemSnapshot: Codable, Identifiable {
+    var id: String { title }
+    let role: String
+    let title: String
+    let value: String?
+    let description: String?
+    let enabled: Bool
+}
+
 struct ShortcutAction: Identifiable, Equatable {
     let id: String
     let name: String
