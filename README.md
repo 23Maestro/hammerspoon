@@ -1,97 +1,89 @@
-# Hammerspoon
+# XSpoon
 
-Control 🔨 Hammerspoon directly from Raycast.
+XSpoon is a native macOS control surface for app-aware Hammerspoon automation.
 
-## Local Automation Contract
+The goal is simple: let a person point at a real app control, capture it once, assign a shortcut, and run it later from a consistent per-app command map. The product is built for the apps people actually use every day, including surfaces that do not expose friendly keyboard shortcuts.
 
-This setup has two runtime engines and three user-facing target labels.
+This repository is the canonical home for both sides of the system:
 
-- `Website`: Chrome DOM / selector capture. Use this when the target is a webpage button, field, or element.
-- `Mac App`: macOS Accessibility capture. Use this when the target is a selected item, focused field, app button, or context menu in a native app.
-- `Web App Window`: Electron/webview app. Use a DOM/devtools adapter for saved controls. Accessibility is only for coarse app/window state, not repeatable button selection.
+- `apps/XSpoon`: the SwiftUI menu bar app, inspector, capture flow, shortcut catalog, and settings surface.
+- `assets/hammerspoon`: the Lua runtime, app adapters, Accessibility helpers, Chrome DOM helpers, and global hotkey bindings.
+- `~/.hammerspoon`: the live local runtime path, symlinked back into this repo for the maintained Lua modules.
 
-The core rule is: capture the target with `RightCmd + I`, save the action in Raycast, then run it later through Hammerspoon. Codex is for adding or repairing adapters, not for running the shortcut every time.
+This is not extension-only maintenance. The Raycast extension still lives at the repo root, but XSpoon app changes are first-class repository changes and should be reviewed, committed, and pushed with the matching Hammerspoon runtime work.
 
-Current app-module lanes:
+## Product Direction
 
-- `Chrome`: website selector capture and URL-scoped clicks.
-- `Finder`: selected item -> context menu.
-- `Codex`: app-specific macOS Accessibility actions.
-- `Notion`: macOS Accessibility first; custom adapter only if needed.
-- `Keyboard Maestro`: editor/engine Accessibility helpers.
-- `Eagle`: Mac App Accessibility lane.
-  - Bundle IDs: `tw.ogdesign.eagle`, `com.eagle.cool`.
-  - Current profile: selected/focused target -> frame right-click. Needs user-present selected-item test before deeper actions.
-- `Canva`: Web App Window lane; Accessibility first.
-  - Bundle ID: `com.canva.CanvaDesktop`.
-  - Proven AX limitation: focused `Elements` tab exposes `AXRadioButton` / `AXTabButton`, `AXTitle=Elements`, `AXValue=1`, but Canva does not expose the same tab in the searchable AX tree when it is not already focused.
-  - Current menu/process check: Canva exposes no visible Inspect/Developer Tools menu item and is not running with a remote-debugging flag.
-  - `ctrl+alt+e`: intentionally returns false until a WebView/DOM adapter exists. It does not type into Canva, use command palette fallback, or click saved coordinates.
+XSpoon is becoming a small, reliable Mac utility for personal app automation.
 
-Do not add a new app module until a real target proves what it needs. The first test for Mac apps is:
+The first paid version should make these workflows feel native:
 
-- selected item
-- focused field
-- button by Accessibility label/role
-- context menu by `AXShowMenu`, then frame right-click fallback
+- Capture a button, menu item, field, or selected item from the frontmost app.
+- Save the capture as a named app shortcut.
+- Reuse the same shortcut key per app without collisions.
+- Run saved actions through Hammerspoon with the same per-app dispatcher as the proven hand-written shortcuts.
+- Keep clipboard and capture artifacts inspectable so failures can be debugged instead of guessed.
 
-Button labels are not universal. A `Delete`, `Share`, or `Log In` button may expose different Accessibility names per app or website. Save repeatable actions scoped to the app bundle ID or Chrome URL, and only promote a shared helper after two or more real targets prove the same shape.
+The operating principle is: XSpoon owns the interface and catalog; Hammerspoon owns the automation runtime.
 
-For Web App Window apps like Canva and Notion, skip AX for saved controls once the app proves the target is webview-owned. The capture path should identify the front app, open or attach to that app's inspectable webview, capture selector/XPath/DOM identity, and save that instead.
+## Current Shortcut Contract
 
-✅ Requirements
+Global XSpoon shortcuts are handled by Hammerspoon:
 
-- Requires the installation of Hammerspoon. Go to https://www.hammerspoon.org/ to download.
-- With Hammerspoon installed, open your configuration file. By default Hammerspoon configuration file is located at `~/.hammerspoon/init.lua`. If you don't have this file, you can create it by running `touch ~/.hammerspoon/init.lua` in your terminal.
-- Add this line at the top of your configuration file: `hs.allowAppleScript(true)`, save the file and reload Hammerspoon.
-- All set! You can now control Hammerspoon from Raycast.
+- `Control-Option-O`: toggle the XSpoon menu.
+- `Control-Option-I`: inspect the current app.
+- `Control-Option-E`: capture the current element.
+- `Control-Option-0`: open the inspector window.
 
-## List Scripts setup
+Saved app actions use the same per-app dispatcher pattern as the existing working shortcuts. For example, a physical right-side modifier can be normalized by Karabiner into `ctrl+alt`, then Hammerspoon receives the real `Control-Option-<key>` combo and dispatches the action for the frontmost app.
 
-The `List Scripts` command allows you to list and run custom Hammerspoon scripts directly from Raycast.
+## Build XSpoon
 
-To set it up, you first need to define a lua global variable in your Hammerspoon configuration file, this variable should be a table that contains two functions, `list` and `execute`. These two functions are going to be called by this raycast extension when listing and running scripts:
-
-- The `list` function should return a json array describing your scripts. each item in the array can have the following properties:
-  - `id`: a unique identifier for the script (must be unique, it is used to run scripts) **(required)**.
-  - `name`: the name of the script to be displayed in Raycast **(required)**.
-  - `description`: a short description of the script to be displayed in Raycast.
-  - `keywords`: an array of keywords to help with searching for the script in Raycast.
-- The `execute` function expects to receive a script id as an argument, and execute the corresponding script.
-
-Finally, you need to put the name of the global variable you created in your Hammerspoon configuration file in the `List Scripts` command preferences.
-
-Example of a Hammerspoon configuration file with the `List Scripts` setup:
-
-```lua
--- <<rest of your configuration file>>
-
-local scriptDefs = {
-  { id = 'test', name = 'Test', description = 'This is a test script' },
-  { id = 'test2', name = 'Test 2', description = 'This is another test script' }
-}
-
-local scriptActions = {
-  test = function ()
-    hs.alert.show('Test script executed')
-  end,
-  test2 = function ()
-    hs.alert.show('Test 2 script executed')
-  end
-}
-
-__SCRIPTS__ = {
-  list = function ()
-    return hs.json.encode(scriptDefs)
-  end,
-  execute = function (id)
-    local scriptAction = scriptActions[id]
-
-    if not scriptAction then
-      error('User Script with id "' .. id .. '" not found')
-    end
-
-    scriptAction()
-  end
-}
+```sh
+cd apps/XSpoon
+./script/build_and_run.sh --verify
 ```
+
+The script builds the Swift package, signs `dist/XSpoon.app`, installs it to `/Applications/XSpoon.app`, registers Launch Services, launches the app, and verifies that the process starts.
+
+## Reload Hammerspoon
+
+```sh
+hs -c 'hs.reload()'
+```
+
+Hammerspoon may invalidate the CLI message port while reloading. That is expected when the reload succeeds and the IPC connection drops mid-command. Re-run a small check after a second if proof is needed:
+
+```sh
+hs -c 'print(hs.inspect(hs.hotkey.getHotkeys()))'
+```
+
+## Runtime Map
+
+The main runtime pieces are:
+
+- `assets/hammerspoon/scripts/browser_automations.lua`: global hotkeys, live inspector/capture path, Chrome helpers, local Accessibility primitives, and Raycast script entrypoints.
+- `assets/hammerspoon/scripts/automation_core.lua`: semantic per-app dispatcher.
+- `assets/hammerspoon/scripts/apps/`: app-specific Lua modules and saved capture actions.
+- `apps/XSpoon/Services/HammerspoonClient.swift`: Swift bridge for reading/writing Hammerspoon artifacts.
+- `apps/XSpoon/Stores/InspectorStore.swift`: app state, capture flow, shortcut persistence, and clipboard write path.
+
+## Maintenance Rule
+
+Keep XSpoon and Hammerspoon changes in this repository together. A UI change that affects capture, shortcuts, or saved actions should land with the matching Lua runtime change and README update.
+
+Do not treat `apps/XSpoon` as a throwaway prototype folder. It is the app surface for this repository.
+
+Before pushing, check all three maintained surfaces:
+
+```sh
+git status --short
+git diff -- apps/XSpoon assets/hammerspoon README.md XSPOON_PROJECT_OPERATIONS.md
+```
+
+If the change touches capture, shortcuts, saved actions, or Hammerspoon notifications, the push should usually include both:
+
+- the XSpoon Swift files under `apps/XSpoon`
+- the Hammerspoon Lua files under `assets/hammerspoon`
+
+Raycast extension-only pushes are only appropriate for changes limited to the Raycast commands, extension metadata, or TypeScript extension code.

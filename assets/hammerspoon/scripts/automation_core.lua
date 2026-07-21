@@ -54,7 +54,9 @@ function M.dispatch(action)
         return false
       end
 
-      return result == nil and true or result
+      if result ~= false then
+        return result == nil and true or result
+      end
     end
   end
 
@@ -73,6 +75,34 @@ function M.eventtap(action)
   return function()
     return M.dispatch(action) == true
   end
+end
+
+function M.loadGeneratedModules()
+  local registered = {}
+  for _, app in ipairs(apps) do
+    registered[app.id or ""] = true
+  end
+
+  local appsDir = hs.configdir .. "/scripts/apps"
+  local iter, dir = pcall(require("hs.fs").dir, appsDir)
+  if not iter or not dir then
+    return 0
+  end
+
+  local count = 0
+  for file in dir do
+    if file:match("%.lua$") then
+      local modName = "scripts.apps." .. file:gsub("%.lua$", "")
+      local ok, mod = pcall(require, modName)
+      if ok and type(mod) == "table" and mod.id and not registered[mod.id] then
+        table.insert(apps, mod)
+        registered[mod.id] = true
+        count = count + 1
+      end
+    end
+  end
+
+  return count
 end
 
 return M

@@ -3,10 +3,15 @@ local M = {}
 local CHROME_BUNDLE_ID = "com.google.Chrome"
 local LATEST_ELEMENT_PATH = hs.configdir .. "/browser_element_latest.json"
 local LOCAL_LATEST_ELEMENT_PATH = hs.configdir .. "/local_element_latest.json"
+local LIVE_LATEST_ELEMENT_PATH = hs.configdir .. "/live_element_latest.json"
 local ELEMENT_ACTIONS_PATH = hs.configdir .. "/browser_element_actions.json"
 local clipboardText
 local catalog = {}
 local notifier = require("scripts.notify")
+local liveInspectorTimer
+local liveInspectorCaptureTap
+local liveInspectorSignature = ""
+local MENU_ITEMS_PATH = hs.configdir .. "/menu_items_latest.json"
 
 local function appleScriptString(value)
   return '"' .. tostring(value):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -81,6 +86,15 @@ local function jsString(value)
   return encoded:sub(2, -2)
 end
 
+local function systemPasteText(value)
+  local previous = hs.pasteboard.getContents()
+  hs.pasteboard.setContents(tostring(value or ""))
+  hs.osascript.applescript('tell application "System Events" to keystroke "v" using command down')
+  hs.timer.doAfter(0.3, function()
+    hs.pasteboard.setContents(previous or "")
+  end)
+end
+
 local function notify(message)
   notifier.show(message)
 end
@@ -110,6 +124,34 @@ local function axAttribute(element, attribute)
   return tostring(value)
 end
 
+local function axRawAttribute(element, attribute)
+  if not element then
+    return nil
+  end
+
+  local ok, value = pcall(function()
+    return element:attributeValue(attribute)
+  end)
+
+  return ok and value or nil
+end
+
+local function plainRect(rect)
+  if not rect then
+    return nil
+  end
+
+  local x = tonumber(rect.x)
+  local y = tonumber(rect.y)
+  local w = tonumber(rect.w)
+  local h = tonumber(rect.h)
+  if not x or not y or not w or not h then
+    return nil
+  end
+
+  return { x = x, y = y, w = w, h = h }
+end
+
 local function axFrame(element)
   if not element then
     return nil
@@ -117,18 +159,21 @@ local function axFrame(element)
 
   local frame = element:attributeValue("AXFrame")
   if frame then
-    return frame
+    local normalized = plainRect(frame)
+    if normalized then
+      return normalized
+    end
   end
 
   local position = element:attributeValue("AXPosition")
   local size = element:attributeValue("AXSize")
   if position and size then
-    return {
+    return plainRect({
       x = position.x,
       y = position.y,
       w = size.w,
       h = size.h,
-    }
+    })
   end
 
   return nil
@@ -152,20 +197,33 @@ local function firstAttributeElement(element, attributes)
   return nil
 end
 
-local function walkAx(element, predicate, depth)
+local function walkAx(element, predicate, depth, seen)
   if not element or depth < 0 then
     return nil
   end
+
+  seen = seen or {}
+  local identity = tostring(element)
+  if seen[identity] then
+    return nil
+  end
+  seen[identity] = true
 
   if predicate(element) then
     return element
   end
 
-  local children = element:attributeValue("AXChildren") or {}
-  for _, child in ipairs(children) do
-    local found = walkAx(child, predicate, depth - 1)
-    if found then
-      return found
+  for _, attribute in ipairs({ "AXChildren", "AXVisibleChildren", "AXChildrenInNavigationOrder" }) do
+    local ok, children = pcall(function()
+      return element:attributeValue(attribute)
+    end)
+    if ok and type(children) == "table" then
+      for _, child in ipairs(children) do
+        local found = walkAx(child, predicate, depth - 1, seen)
+        if found then
+          return found
+        end
+      end
     end
   end
 
@@ -610,6 +668,7 @@ function M.pickSelector(options)
       hs.eventtap.keyStroke({ "ctrl", "alt" }, "return", 0)
       hs.timer.doAfter(0.8, function()
         if persistLatestElement() then
+          hs.distributednotifications.post("com.singleton23.XSpoon.captureUpdated")
           notify("Element Captured")
         else
           notify("Element Copy Pending")
@@ -639,7 +698,7 @@ local function localElementPayload(element, captureMethod)
   local app = hs.application.frontmostApplication()
   local win = app and app:focusedWindow()
   local frame = axFrame(element)
-  local windowFrame = win and win:frame()
+  local windowFrame = plainRect(win and win:frame())
 
   return {
     kind = "hammerspoon-local-element",
@@ -659,6 +718,225 @@ local function localElementPayload(element, captureMethod)
   }
 end
 
+local function liveElementPayload(element, point)
+  local pid = element and element:pid()
+  local app = pid and hs.application.applicationForPID(pid) or nil
+  local bundleID = app and app:bundleID() or ""
+  if bundleID == "com.singleton23.XSpoon" then
+    return nil
+  end
+
+  local window = axRawAttribute(element, "AXWindow")
+  local actions = {}
+  local actionsOk, actionNames = pcall(function()
+    return element:actionNames()
+  end)
+  if actionsOk and type(actionNames) == "table" then
+    actions = actionNames
+  end
+
+  return {
+    kind = "hammerspoon-live-element",
+    captureMethod = "live-hover",
+    appName = app and app:name() or "Unknown App",
+    bundleID = bundleID,
+    appPath = app and app:path() or "",
+    windowTitle = axAttribute(window, "AXTitle"),
+    role = axAttribute(element, "AXRole"),
+    subrole = axAttribute(element, "AXSubrole"),
+    axTitle = axAttribute(element, "AXTitle"),
+    axValue = axAttribute(element, "AXValue"),
+    axDescription = axAttribute(element, "AXDescription"),
+    axPlaceholder = axAttribute(element, "AXPlaceholderValue"),
+    axHelp = axAttribute(element, "AXHelp"),
+    actions = actions,
+    frame = axFrame(element) or { x = point.x, y = point.y, w = 1, h = 1 },
+    windowFrame = axFrame(window),
+    capturedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+  }
+end
+
+local function writeLiveElement(payload)
+  local encoded, encodeError = hs.json.encode(payload, true)
+  if not encoded then
+    hs.printf("XSpoon live payload encode failed: %s", tostring(encodeError))
+    return false
+  end
+
+  local temporaryPath = LIVE_LATEST_ELEMENT_PATH .. ".tmp"
+  local file = io.open(temporaryPath, "w")
+  if not file then
+    hs.printf("XSpoon live payload write failed: %s", temporaryPath)
+    return false
+  end
+
+  file:write(encoded)
+  file:close()
+  return os.rename(temporaryPath, LIVE_LATEST_ELEMENT_PATH) ~= nil
+end
+
+local function updateLiveInspector()
+  local point = hs.mouse.absolutePosition()
+  local element = hs.axuielement.systemElementAtPosition(point)
+  if not element then
+    return
+  end
+
+  local payload = liveElementPayload(element, point)
+  if not payload then
+    return
+  end
+
+  local frame = payload.frame or {}
+  local signature = table.concat({
+    payload.bundleID or "",
+    payload.role or "",
+    payload.subrole or "",
+    payload.axTitle or "",
+    payload.axValue or "",
+    payload.axDescription or "",
+    tostring(frame.x or 0),
+    tostring(frame.y or 0),
+    tostring(frame.w or 0),
+    tostring(frame.h or 0),
+  }, "\0")
+
+  if signature == liveInspectorSignature then
+    return
+  end
+
+  if writeLiveElement(payload) then
+    liveInspectorSignature = signature
+    hs.distributednotifications.post("com.singleton23.XSpoon.liveElementUpdated")
+  end
+end
+
+function M.toggleLiveInspector()
+  local function stopLiveInspector()
+    liveInspectorTimer:stop()
+    liveInspectorTimer = nil
+    if liveInspectorCaptureTap then
+      liveInspectorCaptureTap:stop()
+      liveInspectorCaptureTap = nil
+    end
+    liveInspectorSignature = ""
+  end
+
+  if liveInspectorTimer then
+    stopLiveInspector()
+    return hs.json.encode({ status = "live-inspector-stopped" })
+  end
+
+  liveInspectorSignature = ""
+  liveInspectorTimer = hs.timer.doEvery(0.12, updateLiveInspector)
+  liveInspectorCaptureTap = hs.eventtap.new({
+    hs.eventtap.event.types.leftMouseDown,
+    hs.eventtap.event.types.rightMouseDown,
+    hs.eventtap.event.types.keyDown,
+  }, function(event)
+    if event:getType() == hs.eventtap.event.types.keyDown then
+      if event:getKeyCode() == hs.keycodes.map.escape then
+        stopLiveInspector()
+        hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
+        return true
+      end
+      return false
+    end
+
+    if event:getType() == hs.eventtap.event.types.rightMouseDown then
+      updateLiveInspector()
+      local target = localContextTarget()
+      if not target then
+        notify("No menu target")
+        return true
+      end
+
+      local items = {}
+      local showOk = pcall(function() target:performAction("AXShowMenu") end)
+      if showOk then
+        hs.timer.usleep(200000)
+        local children = target:attributeValue("AXChildren") or {}
+        for _, child in ipairs(children) do
+          local childRole = axAttribute(child, "AXRole")
+          if childRole == "AXMenu" then
+            local menuChildren = child:attributeValue("AXChildren") or {}
+            for _, item in ipairs(menuChildren) do
+              if axAttribute(item, "AXRole") == "AXMenuItem" then
+                table.insert(items, {
+                  role = "AXMenuItem",
+                  title = axAttribute(item, "AXTitle") or "",
+                  value = axAttribute(item, "AXValue"),
+                  description = axAttribute(item, "AXDescription"),
+                  enabled = item:attributeValue("AXEnabled") ~= false,
+                })
+              end
+            end
+            break
+          end
+        end
+        pcall(function() target:performAction("AXCancel") end)
+      end
+
+      if #items > 0 then
+        local encoded = hs.json.encode(items, true)
+        local menuFile = io.open(MENU_ITEMS_PATH, "w")
+        if menuFile then
+          menuFile:write(encoded)
+          menuFile:close()
+        end
+        notify(tostring(#items) .. " menu items")
+        hs.distributednotifications.post("com.singleton23.XSpoon.menuItemsRead")
+      else
+        notify("No menu items found")
+      end
+      return true
+    end
+
+    updateLiveInspector()
+    local title = "element"
+    local file = io.open(LIVE_LATEST_ELEMENT_PATH, "r")
+    if file then
+      local ok, data = pcall(hs.json.decode, file:read("*a"))
+      file:close()
+      if ok and data then
+        title = data.axTitle or data.title or data.axDescription or "element"
+      end
+    end
+    notify("Captured " .. tostring(title):sub(1, 30))
+    stopLiveInspector()
+    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
+    return true
+  end)
+  liveInspectorCaptureTap:start()
+  updateLiveInspector()
+  return hs.json.encode({
+    status = "live-inspector-started",
+    instruction = "click-to-capture",
+    path = LIVE_LATEST_ELEMENT_PATH,
+  })
+end
+
+function M.liveInspectorActive()
+  return liveInspectorTimer ~= nil
+end
+
+function M.copyLiveElementToClipboard()
+  local file = io.open(LIVE_LATEST_ELEMENT_PATH, "r")
+  if not file then
+    return false
+  end
+
+  local value = file:read("*a")
+  file:close()
+
+  if not value or value == "" then
+    return false
+  end
+
+  hs.pasteboard.setContents(value)
+  return true
+end
+
 function M.captureFocusedLocalElement()
   local system = hs.axuielement.systemWideElement()
   local focused = system and system:attributeValue("AXFocusedUIElement")
@@ -672,7 +950,14 @@ function M.captureFocusedLocalElement()
   end
 
   local payload = localElementPayload(element, target and "context-target" or "focused")
-  local encoded = hs.json.encode(payload, true)
+  local encoded, encodeError = hs.json.encode(payload, true)
+  if not encoded then
+    return hs.json.encode({
+      error = "Could not encode local element JSON",
+      message = tostring(encodeError or "Unsupported Accessibility value"),
+    })
+  end
+
   local file = io.open(LOCAL_LATEST_ELEMENT_PATH, "w")
 
   if not file then
@@ -682,6 +967,7 @@ function M.captureFocusedLocalElement()
   file:write(encoded)
   file:close()
   hs.pasteboard.setContents(encoded)
+  hs.distributednotifications.post("com.singleton23.XSpoon.captureUpdated")
   notify("Local Element Captured")
   return hs.json.encode({ status = "captured-local-element", path = LOCAL_LATEST_ELEMENT_PATH })
 end
@@ -708,11 +994,11 @@ function M.openFocusedLocalContextMenu()
     })
   end
 
-  local showMenuOk = pcall(function()
-    target:performAction("AXShowMenu")
+  local showMenuOk, showMenuResult = pcall(function()
+    return target:performAction("AXShowMenu")
   end)
 
-  if showMenuOk then
+  if showMenuOk and showMenuResult ~= false and showMenuResult ~= nil then
     notify("Context Menu")
     return hs.json.encode({
       status = "opened-context-menu",
@@ -780,37 +1066,24 @@ function M.rightClickFocusedLocalTarget()
 end
 
 local function rootForLocalAction(action)
-  local app
-  if action.appBundleID and action.appBundleID ~= "" then
-    app = hs.application.get(action.appBundleID)
-    if not app then
-      hs.application.launchOrFocusByBundleID(action.appBundleID)
-      hs.timer.usleep(300000)
-      app = hs.application.get(action.appBundleID)
-    end
-  end
-
-  if not app and action.appPath and action.appPath ~= "" then
-    hs.application.open(action.appPath)
-    hs.timer.usleep(300000)
-    app = hs.application.get(action.appBundleID or "") or hs.application.find(action.appName or "")
-  end
-
-  if not app and action.appName and action.appName ~= "" then
-    app = hs.application.find(action.appName)
-  end
-
-  if app then
-    app:activate()
-  else
-    app = hs.application.frontmostApplication()
-  end
-
+  local app = hs.application.frontmostApplication()
   if not app then
     return nil, "missing-app"
   end
 
+  if action.appBundleID and action.appBundleID ~= "" and app:bundleID() ~= action.appBundleID then
+    return nil, "wrong-app"
+  end
+
   local win = app:focusedWindow()
+  if not win then
+    for _, candidate in ipairs(app:allWindows()) do
+      if candidate:isStandard() then
+        win = candidate
+        break
+      end
+    end
+  end
   if not win then
     return nil, "missing-window"
   end
@@ -826,6 +1099,15 @@ local function findLocalActionElement(action)
   local root, errorMessage = rootForLocalAction(action)
   if not root then
     return nil, errorMessage
+  end
+
+  local hasMatchers = (action.axRole and action.axRole ~= "")
+    or (action.axTitle and action.axTitle ~= "")
+    or (action.axValue and action.axValue ~= "")
+    or (action.axDescription and action.axDescription ~= "")
+
+  if not hasMatchers then
+    return nil, "missing-local-matchers"
   end
 
   local function matches(element)
@@ -853,25 +1135,134 @@ local function findLocalActionElement(action)
     return focused, nil
   end
 
+  -- Electron/WebView apps can expose the element directly under a screen point
+  -- while omitting it from AXChildren. Rebuild the saved point relative to the
+  -- current window, then accept it only when the saved AX identity still matches.
+  local savedFrame = action.frame
+  local savedWindowFrame = action.windowFrame
+  local currentWindowFrame = axFrame(root)
+  if type(savedFrame) == "table" and type(savedWindowFrame) == "table" and currentWindowFrame
+      and savedFrame.x and savedFrame.y and savedWindowFrame.x and savedWindowFrame.y then
+    local relativeX = savedFrame.x - savedWindowFrame.x + ((savedFrame.w or 1) / 2)
+    local relativeY = savedFrame.y - savedWindowFrame.y + ((savedFrame.h or 1) / 2)
+    local pointElement = hs.axuielement.systemElementAtPosition({
+      x = currentWindowFrame.x + relativeX,
+      y = currentWindowFrame.y + relativeY,
+    })
+    if pointElement and matches(pointElement) then
+      return pointElement, nil
+    end
+  end
+
   return walkAx(root, matches, 8), nil
+end
+
+local function clickLocalActionFrame(action)
+  local frame = action.frame
+  if type(frame) ~= "table" or not frame.x or not frame.y then
+    return nil
+  end
+
+  hs.eventtap.leftClick({
+    x = frame.x + ((frame.w or 1) / 2),
+    y = frame.y + ((frame.h or 1) / 2),
+  })
+
+  return hs.json.encode({
+    status = "clicked-local-frame",
+    appName = action.appName or "",
+    bundleID = action.appBundleID or "",
+    x = frame.x,
+    y = frame.y,
+    w = frame.w,
+    h = frame.h,
+  })
+end
+
+local function localReplayAction(action)
+  if action.axAction and action.axAction ~= "" then
+    return action.axAction
+  end
+  if action.captureType == "Text field" or action.axRole == "AXTextField" or action.axRole == "AXTextArea" then
+    return "AXFocus"
+  end
+  return "AXPress"
 end
 
 local function pressLocalAction(action)
   local element, errorMessage = findLocalActionElement(action)
   if not element then
+    local hasMatcher = (action.axRole and action.axRole ~= "")
+      or (action.axTitle and action.axTitle ~= "")
+      or (action.axValue and action.axValue ~= "")
+      or (action.axDescription and action.axDescription ~= "")
+    local frameResult = not hasMatcher and clickLocalActionFrame(action)
+    if frameResult then
+      return frameResult
+    end
+
     return hs.json.encode({ status = "missing-local-element", message = errorMessage or "No matching AX element" })
   end
 
-  local ok = pcall(function()
-    element:performAction("AXPress")
+  if action.menuItemTitle and action.menuItemTitle ~= "" then
+    local showOk = pcall(function() element:performAction("AXShowMenu") end)
+    if not showOk then
+      return hs.json.encode({ status = "menu-open-failed" })
+    end
+    hs.timer.usleep(200000)
+
+    local menuItem = walkAx(element, function(child)
+      return axAttribute(child, "AXRole") == "AXMenuItem"
+        and axAttribute(child, "AXTitle") == action.menuItemTitle
+    end, 4)
+
+    if not menuItem then
+      pcall(function() element:performAction("AXCancel") end)
+      return hs.json.encode({ status = "menu-item-not-found", menuItemTitle = action.menuItemTitle })
+    end
+
+    local pressOk = pcall(function() menuItem:performAction("AXPress") end)
+    if not pressOk then
+      return hs.json.encode({ status = "menu-item-press-failed" })
+    end
+
+    return hs.json.encode({
+      status = "performed-menu-action",
+      menuItemTitle = action.menuItemTitle,
+      role = axAttribute(element, "AXRole"),
+      title = axAttribute(element, "AXTitle"),
+    })
+  end
+
+  local replayAction = localReplayAction(action)
+  if replayAction == "AXFocus" then
+    local ok = pcall(function()
+      element:setAttributeValue("AXFocused", true)
+    end)
+    local focused = ok and axRawAttribute(element, "AXFocused") == true
+    if not focused then
+      return hs.json.encode({ status = "local-focus-failed" })
+    end
+    return hs.json.encode({
+      status = "focused-local-element",
+      role = axAttribute(element, "AXRole"),
+      title = axAttribute(element, "AXTitle"),
+      value = axAttribute(element, "AXValue"),
+      description = axAttribute(element, "AXDescription"),
+    })
+  end
+
+  local ok, result = pcall(function()
+    return element:performAction(replayAction)
   end)
 
-  if not ok then
-    return hs.json.encode({ status = "local-press-failed" })
+  if not ok or result == false or result == nil then
+    return hs.json.encode({ status = "local-action-failed", action = replayAction })
   end
 
   return hs.json.encode({
-    status = "pressed-local-element",
+    status = "performed-local-action",
+    action = replayAction,
     role = axAttribute(element, "AXRole"),
     title = axAttribute(element, "AXTitle"),
     value = axAttribute(element, "AXValue"),
@@ -897,6 +1288,20 @@ local function readElementActions()
   end
 
   return decoded
+end
+
+function M.readElementActions()
+  return readElementActions()
+end
+
+function M.actionsForApp(bundleID)
+  local matched = {}
+  for _, action in ipairs(readElementActions()) do
+    if tostring(action.appBundleID or "") == bundleID then
+      table.insert(matched, action)
+    end
+  end
+  return matched
 end
 
 local function runElementAction(action)
@@ -935,6 +1340,14 @@ local function runElementAction(action)
   return result
 end
 
+function M.runElementAction(action)
+  if type(action) ~= "table" then
+    return false
+  end
+
+  return runElementAction(action)
+end
+
 local jobHistoryEntries = {
   prospectId = {
     companyName = "National Prospect ID",
@@ -960,7 +1373,7 @@ local jobHistoryEntries = {
     position = "Video Editor",
     companyPhone = "",
     country = "United States of America",
-    responsibilities = "Restructured roughly 38 hours of curriculum; processed 180-200 lesson assets; led most of the migration through deterministic FFmpeg workflows; increased course assembly throughput 2-3x; eliminated export errors; standardized naming schemas; consolidated transcripts; replaced manual timelines with automated batch export pipelines; and established scalable folder architecture and encoding standards.",
+    responsibilities = "Managed over 50 hours of curriculum; processed 180-200 lesson assets; led most of the migration through deterministic FFmpeg workflows; increased course assembly throughput 2-3x; eliminated export errors; standardized naming schemas; consolidated transcripts; replaced manual timelines with automated batch export pipelines; and established scalable folder architecture and encoding standards.",
     address1 = "6 Liberty Square",
     city = "Boston",
     county = "Suffolk",
@@ -1125,7 +1538,12 @@ local function fillWorkHistory(jobKey)
   local script = ([[
 (() => {
   const job = %s;
-  const norm = (value) => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const norm = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/[*:]/g, " ")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
@@ -1134,6 +1552,18 @@ local function fillWorkHistory(jobKey)
   const labelFor = (el) => {
     const direct = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
     if (direct) return direct.innerText;
+    const ariaLabel = el.getAttribute("aria-label");
+    if (ariaLabel) return ariaLabel;
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const labelledText = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((node) => node.innerText || node.textContent || "")
+        .join(" ");
+      if (labelledText.trim()) return labelledText;
+    }
     let p = el;
     for (let i = 0; p && i < 4; i++, p = p.parentElement) {
       const label = p.querySelector && p.querySelector("label");
@@ -1141,9 +1571,40 @@ local function fillWorkHistory(jobKey)
     }
     return "";
   };
+  const nearbyTextFor = (el) => {
+    const chunks = [];
+    let prev = el.previousElementSibling;
+    for (let i = 0; prev && i < 3; i++, prev = prev.previousElementSibling) {
+      const text = (prev.innerText || prev.textContent || "").trim();
+      if (text) chunks.push(text);
+    }
+    let p = el.parentElement;
+    for (let i = 0; p && i < 4; i++, p = p.parentElement) {
+      const text = (p.innerText || p.textContent || "").replace(el.value || "", " ").trim();
+      if (text) chunks.push(text);
+    }
+    return chunks.join(" ");
+  };
   const controls = [...document.querySelectorAll("input:not([type=hidden]), textarea, select")]
     .filter(visible)
-    .map((el) => ({ el, meta: norm([el.id, el.name, labelFor(el), el.placeholder].join(" ")) }));
+    .map((el) => {
+      const fieldMeta = norm([
+        el.id,
+        el.name,
+        el.getAttribute("autocomplete"),
+        el.getAttribute("data-testid"),
+        el.getAttribute("role"),
+        labelFor(el),
+        el.placeholder,
+      ].join(" "));
+      const contextMeta = norm(nearbyTextFor(el));
+      return {
+        el,
+        fieldMeta,
+        contextMeta,
+        meta: norm([fieldMeta, contextMeta].join(" "))
+      };
+    });
   const set = (item, value) => {
     if (value == null || value === "") return false;
     if (!item || !item.el) return false;
@@ -1154,8 +1615,18 @@ local function fillWorkHistory(jobKey)
       if (!option) return false;
       el.value = option.value;
     } else {
-      el.value = value || "";
+      if (el.tagName === "TEXTAREA") {
+        el.focus();
+        if (el.select) el.select();
+        document.execCommand("insertText", false, value || "");
+      }
+      const setter = Object.getOwnPropertyDescriptor(el.constructor.prototype, "value")?.set
+        || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set
+        || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      if (!el.value && setter) setter.call(el, value || "");
+      else if (!el.value) el.value = value || "";
     }
+    el.focus();
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -1191,8 +1662,6 @@ local function fillWorkHistory(jobKey)
       county: set(byId(`public-candidate-work-history-address-${i}-county`), job.county),
       state: set(byId(`public-candidate-work-history-address-${i}-us-state`), job.state),
       zip: set(byId(`public-candidate-work-history-address-${i}-zip`), job.zip),
-      startDate: set(byId(`txt-workHistory-startDate-${i}`), job.startDate),
-      endDate: set(byId(`txt-workHistory-endDate-${i}`), job.endDate),
       reason: set(byId(
         `workHistory.reasonForLeaving.${i}`,
         `workHistory.reason.${i}`,
@@ -1239,38 +1708,71 @@ local function fillWorkHistory(jobKey)
       filled
     });
   }
-  const isCompany = (item) => item.meta.includes("company name")
-    || item.meta.includes("companyname")
-    || item.meta.includes("employer name")
-    || item.meta.includes("employername")
-    || item.meta.includes("employer");
+  const hasTerm = (value, term) => term.includes(" ")
+    ? value.includes(term)
+    : value.split(" ").includes(term);
+  const hasAny = (value, words) => words.some((word) => hasTerm(value, word));
+  const hasAll = (value, words) => words.every((word) => hasTerm(value, word));
+  const companyTerms = [
+    "company name",
+    "companyname",
+    "company",
+    "employer name",
+    "employername",
+    "employer",
+    "organization name",
+    "organization",
+    "organisation",
+    "business name",
+  ];
+  const genericAutocomplete = (item) => item.fieldMeta === ""
+    || hasAny(item.fieldMeta, ["type to search", "select", "combobox"]);
+  const isCompany = (item) => (hasAny(item.fieldMeta, companyTerms)
+    || (genericAutocomplete(item) && hasAny(item.contextMeta, companyTerms)))
+    && !hasAny(item.fieldMeta, ["company url", "company website", "website", "url", "phone", "email", "reference", "supervisor"]);
   const activeIndex = controls.findIndex((item) => item.el === document.activeElement);
   let start = activeIndex >= 0 ? controls.slice(0, activeIndex + 1).map(isCompany).lastIndexOf(true) : -1;
   if (start < 0) start = controls.findIndex((item) => isCompany(item) && !item.el.value.trim());
   if (start < 0) start = controls.findIndex(isCompany);
-  if (start < 0) return JSON.stringify({ error: "No Employer or Company Name field found" });
+  if (start < 0) return JSON.stringify({
+    error: "No Employer or Company field found",
+    visibleFields: controls.slice(0, 30).map((item) => item.meta)
+  });
   let end = controls.findIndex((item, index) => index > start && isCompany(item));
   if (end < 0) end = controls.length;
   const row = controls.slice(start, end);
-  const find = (...needles) => row.find((item) => needles.every((needle) => item.meta.includes(needle)));
+  const matches = (item, needles) => hasAll(item.fieldMeta, needles) || (item.fieldMeta === "" && hasAll(item.meta, needles));
+  const find = (...needles) => row.find((item) => matches(item, needles));
   const findAny = (...groups) => groups.map((needles) => find(...needles)).find(Boolean);
+  const findSmart = (positiveGroups, negativeWords) => {
+    const blocked = negativeWords || [];
+    return positiveGroups
+      .map((needles) => row.find((item) => matches(item, needles)
+        && !blocked.some((word) => item.fieldMeta.includes(word))))
+      .find(Boolean);
+  };
   const address = find("address", "line 1") || find("address-1") || find("address 1");
+  const responsibilities = findAny(["responsibilities"], ["major", "duties"], ["describe", "duties"], ["duties"], ["job", "description"], ["work", "description"], ["description"]);
   const city = find("city");
   const county = find("county");
   const state = find("state");
   const zip = find("zip");
   const filled = {
-    companyName: set(row[0], job.companyName),
-    position: set(findAny(["position"], ["job", "title"], ["title"], ["role"]), job.position),
+    companyName: set(row[start >= 0 ? 0 : 0], job.companyName),
+    position: set(findSmart([
+      ["position held"],
+      ["position"],
+      ["job title"],
+      ["title"],
+      ["role"],
+    ], ["company", "supervisor", "reference"]), job.position),
     companyPhone: set(findAny(["company", "phone"], ["employer", "phone"], ["work", "phone"], ["phone"]), job.companyPhone),
     country: set(findAny(["country"], ["location", "country"]), job.country),
-    responsibilities: set(findAny(["responsibilities"], ["major", "duties"], ["describe", "duties"], ["duties"], ["job", "description"], ["work", "description"], ["description"]), job.responsibilities),
+    responsibilities: set(responsibilities, job.responsibilities),
     city: set(city, job.city),
     county: set(county, job.county),
     state: set(state, job.state),
     zip: set(zip, job.zip),
-    startDate: set(findAny(["start", "date"], ["start"], ["from", "date"], ["from"]), job.startDate),
-    endDate: set(findAny(["end", "date"], ["end"], ["to", "date"], ["to"]), job.endDate),
     reason: set(findAny(["reason", "leaving"], ["reason"], ["leaving"], ["separation", "reason"], ["why", "left"]), job.reason),
     referenceName: set(findAny(["supervisor", "name"], ["reference", "name"], ["manager", "name"]), job.referenceName),
     referenceEmail: set(findAny(["supervisor", "email"], ["reference", "email"], ["manager", "email"]), job.referenceEmail),
@@ -1291,6 +1793,8 @@ local function fillWorkHistory(jobKey)
       state: state && state.el.id,
       zip: zip && zip.el.id,
     },
+    descriptionId: responsibilities && responsibilities.el.id,
+    descriptionFocused: !!responsibilities,
     filled
   });
 })()
@@ -1341,7 +1845,24 @@ local function fillWorkHistory(jobKey)
       end)
     end)
   end
-  notify("Filled work history: " .. job.companyName)
+  if decodedOk and decoded and decoded.descriptionFocused and not decoded.addressFocused and job.responsibilities ~= "" then
+    hs.timer.doAfter(0.2, function()
+      local descriptionId = tostring(decoded.descriptionId or "")
+      chromeExecuteJavaScript(([[(() => {
+        const id = %s;
+        const el = id ? document.getElementById(id) : document.querySelector("textarea[name='description'], textarea[placeholder='Description']");
+        if (!el) return "missing-description";
+        el.scrollIntoView({ block: "center" });
+        el.focus();
+        if (el.select) el.select();
+        return "focused-description";
+      })()]]):format(jsString(descriptionId)), { activate = true })
+      hs.timer.doAfter(0.2, function()
+        systemPasteText(job.responsibilities)
+      end)
+    end)
+  end
+  notify("Dates: " .. tostring(job.startDate or "") .. "-" .. tostring(job.endDate or ""))
   return result
 end
 
@@ -1711,11 +2232,21 @@ end
 
 function M.bindHotkeys()
   M.bindContextMenuHotkey()
+  hs.hotkey.bind({ "ctrl", "alt" }, "0", function()
+    hs.distributednotifications.post("com.singleton23.XSpoon.openInspector")
+  end)
+  hs.hotkey.bind({ "ctrl", "alt" }, "o", function()
+    hs.distributednotifications.post("com.singleton23.XSpoon.toggleMenu")
+  end)
   hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
-    M.captureCurrentTarget()
+    M.toggleLiveInspector()
+    hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
+  end)
+  hs.hotkey.bind({ "ctrl", "alt" }, "e", function()
+    M.copyLiveElementToClipboard()
+    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
   end)
 
-  M.bindElementActionHotkeys()
 end
 
 function M.bindContextMenuHotkey()
@@ -1723,13 +2254,29 @@ function M.bindContextMenuHotkey()
 end
 
 function M.bindElementActionHotkeys()
+  return 0
+end
+
+function M.reloadElementActionHotkeys(actionID)
+  if actionID and actionID ~= "" then
+    return hs.json.encode({
+      actionID = actionID,
+      status = "capture-saved-module-required",
+      saved = elementActionById(actionID) ~= nil,
+      ready = false,
+    })
+  end
+  return hs.json.encode({ status = "capture-catalog-only", count = 0 })
+end
+
+function M.savedElementHotkeyCount()
+  local count = 0
   for _, action in ipairs(readElementActions()) do
     if action.hotkey and action.hotkey.key and action.hotkey.modifiers then
-      hs.hotkey.bind(action.hotkey.modifiers, action.hotkey.key, function()
-        runElementAction(action)
-      end)
+      count = count + 1
     end
   end
+  return count
 end
 
 return M
