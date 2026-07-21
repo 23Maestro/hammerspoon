@@ -11,7 +11,7 @@ struct HammerspoonClient {
 
     func latestSnapshot(source: CaptureSource) -> ElementSnapshot? {
         let filename = source == .accessibility ? "local_element_latest.json" : "browser_element_latest.json"
-        return snapshot(filename: filename)
+        return snapshot(filename: filename, maxAge: 60)
     }
 
     func liveSnapshot() -> ElementSnapshot? {
@@ -23,8 +23,14 @@ struct HammerspoonClient {
         executeHammerspoon("return __SCRIPTS__.toggleLiveInspector()")
     }
 
-    private func snapshot(filename: String) -> ElementSnapshot? {
+    private func snapshot(filename: String, maxAge: TimeInterval? = nil) -> ElementSnapshot? {
         let url = home.appendingPathComponent(".hammerspoon").appendingPathComponent(filename)
+        if let maxAge,
+           let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+           let modified = values.contentModificationDate,
+           Date().timeIntervalSince(modified) > maxAge {
+            return nil
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(ElementSnapshot.self, from: data)
     }
@@ -38,7 +44,25 @@ struct HammerspoonClient {
         let action = ElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
         actions.removeAll { $0.id == action.id }
         actions.append(action)
+        try writeElementActions(actions)
+    }
 
+    func deleteElementAction(id: String) throws {
+        var actions = try readElementActions()
+        actions.removeAll { $0.id == id }
+        try writeElementActions(actions)
+    }
+
+    func deleteElementActions(for app: MyAppDefinition) throws {
+        var actions = try readElementActions()
+        actions.removeAll {
+            let bundleID = $0.appBundleID?.nilIfBlank
+            return bundleID == app.bundleIdentifier || (bundleID == nil && $0.appName == app.name)
+        }
+        try writeElementActions(actions)
+    }
+
+    private func writeElementActions(_ actions: [ElementAction]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(actions)
@@ -47,7 +71,17 @@ struct HammerspoonClient {
 
     @discardableResult
     func reloadHammerspoon() -> Result<String, Error> {
-        executeHammerspoon("hs.reload(); return 'reloading'")
+        executeHammerspoon("hs.timer.doAfter(0.1, hs.reload); return 'reload-scheduled'")
+    }
+
+    @discardableResult
+    func reloadSavedElementRoutes(actionID: String) -> Result<String, Error> {
+        executeHammerspoon("return __SCRIPTS__.reloadElementActionHotkeys('\(actionID)')")
+    }
+
+    @discardableResult
+    func reloadSavedElementRoutes() -> Result<String, Error> {
+        executeHammerspoon("return __SCRIPTS__.reloadElementActionHotkeys()")
     }
 
     private func readElementActions() throws -> [ElementAction] {
@@ -107,6 +141,9 @@ struct ElementAction: Codable, Equatable {
     var appBundleID: String?
     var appPath: String?
     var windowTitleIncludes: String?
+    var captureType: String?
+    var axAction: String?
+    var axActions: [String]?
     var axRole: String?
     var axTitle: String?
     var axValue: String?
@@ -134,6 +171,9 @@ struct ElementAction: Codable, Equatable {
         appBundleID = snapshot.bundleID?.nilIfBlank ?? app.bundleIdentifier
         appPath = snapshot.appPath?.nilIfBlank
         windowTitleIncludes = snapshot.windowTitle?.nilIfBlank
+        captureType = AdapterKind.detect(snapshot)?.rawValue
+        axActions = snapshot.actions
+        axAction = Self.replayAction(for: snapshot, captureType: captureType)
 
         let fallbackButtonLabel = Self.buttonLabel(from: name)
         axRole = snapshot.role?.nilIfBlank ?? (fallbackButtonLabel == nil ? nil : "AXButton")
@@ -147,6 +187,16 @@ struct ElementAction: Codable, Equatable {
         urlIncludes = snapshot.url?.nilIfBlank
         titleIncludes = snapshot.title?.nilIfBlank
         requiredSelector = nil
+    }
+
+    private static func replayAction(for snapshot: ElementSnapshot, captureType: String?) -> String? {
+        if captureType == AdapterKind.textField.rawValue {
+            return "AXFocus"
+        }
+        if snapshot.actions?.contains("AXPress") == true {
+            return "AXPress"
+        }
+        return nil
     }
 
     private static func semanticAction(for shortcut: AppShortcut) -> String {

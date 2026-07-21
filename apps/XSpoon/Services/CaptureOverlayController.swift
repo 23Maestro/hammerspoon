@@ -125,18 +125,18 @@ private struct CaptureOverlayView: View {
     }
 
     private var subtitle: String {
-        let role = model.snapshot?.role ?? model.snapshot?.tag ?? "unknown"
+        let role = model.snapshot?.xRole ?? "XElement"
         let app = model.snapshot?.appName ?? model.context.appName
         return "\(role) - \(app)"
     }
 
     private var metadata: String {
-        let actions = model.snapshot?.actions?.prefix(2).joined(separator: ", ") ?? ""
+        let actions = model.snapshot?.xActions.prefix(2).joined(separator: ", ") ?? ""
         if !actions.isEmpty {
-            return "Actions: \(actions)"
+            return "Can: \(actions)"
         }
 
-        return model.snapshot?.captureMethod ?? "Accessibility"
+        return model.snapshot?.captureSource.rawValue ?? model.context.source.rawValue
     }
 
     var body: some View {
@@ -160,10 +160,12 @@ private struct CaptureOverlayView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(model.status)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if model.status != "Inspecting" {
+                    Text(model.status)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }

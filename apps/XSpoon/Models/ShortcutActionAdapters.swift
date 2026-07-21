@@ -6,44 +6,44 @@ protocol ShortcutActionAdapter {
     func fields(for snapshot: ElementSnapshot) -> [String]
 }
 
-struct SetVariableAdapter: ShortcutActionAdapter {
-    let kind: AdapterKind = .setVariable
+struct ButtonAdapter: ShortcutActionAdapter {
+    let kind: AdapterKind = .button
 
     func detects(label: String) -> Bool {
-        label.localizedCaseInsensitiveContains("Set variable")
+        label.localizedCaseInsensitiveContains("button")
     }
 
     func fields(for snapshot: ElementSnapshot) -> [String] {
-        ["Editable variable field", "Input token after ‘to’", "Current value", "Variable validation"]
+        ["The button you captured", "The app it belongs to"]
     }
 }
 
-struct ChooseFromMenuAdapter: ShortcutActionAdapter {
-    let kind: AdapterKind = .chooseFromMenu
+struct MenuOptionAdapter: ShortcutActionAdapter {
+    let kind: AdapterKind = .menuOption
 
     func detects(label: String) -> Bool {
-        label.localizedCaseInsensitiveContains("Choose from menu with")
+        label.localizedCaseInsensitiveContains("menu")
     }
 
     func fields(for snapshot: ElementSnapshot) -> [String] {
-        ["Prompt", "Menu items", "Edit item text", "Add or remove item"]
+        ["What opens the menu", "The menu option to click", "A short wait between them"]
     }
 }
 
-struct AskForInputAdapter: ShortcutActionAdapter {
-    let kind: AdapterKind = .askForInput
+struct TextFieldAdapter: ShortcutActionAdapter {
+    let kind: AdapterKind = .textField
 
     func detects(label: String) -> Bool {
-        label.localizedCaseInsensitiveContains("Ask for")
+        label.localizedCaseInsensitiveContains("text")
     }
 
     func fields(for snapshot: ElementSnapshot) -> [String] {
-        ["Input type", "Prompt", "Editable prompt"]
+        ["The text field you captured", "The app it belongs to"]
     }
 }
 
 enum AdapterCatalog {
     static func all() -> [any ShortcutActionAdapter] {
-        [SetVariableAdapter(), ChooseFromMenuAdapter(), AskForInputAdapter()]
+        [ButtonAdapter(), MenuOptionAdapter(), TextFieldAdapter()]
     }
 }

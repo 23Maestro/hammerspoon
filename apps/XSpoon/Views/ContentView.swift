@@ -39,13 +39,6 @@ struct ContentView: View {
                             .keyboardShortcut("i", modifiers: [.control, .option])
                             .help(store.isInspecting ? "Stop inspecting" : "Inspect")
 
-                            Button {
-                                store.capture()
-                            } label: {
-                                Label("Capture", systemImage: "target")
-                            }
-                            .keyboardShortcut("e", modifiers: [.control, .option])
-                            .help("Capture element")
                         }
                     }
                 }
@@ -70,6 +63,8 @@ struct MyAppsSettingsView: View {
     @ObservedObject var store: InspectorStore
     @State private var selectedAppID = MyAppsCatalog.all.first?.id ?? "finder"
     @State private var showingEditor = false
+    @State private var shortcutPendingDeletion: AppShortcut?
+    @State private var appPendingDeletion: MyAppDefinition?
 
     private var selectedApp: MyAppDefinition? { store.myApps.first(where: { $0.id == selectedAppID }) }
 
@@ -80,12 +75,21 @@ struct MyAppsSettingsView: View {
                     Label(app.name, systemImage: app.icon).tag(app.id)
                 }
                 Divider()
-                Button {
-                    store.addAppFromCurrentContext()
-                    selectedAppID = store.myApps.last?.id ?? selectedAppID
-                } label: {
-                    Label("Add Current App", systemImage: "plus")
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                HStack {
+                    Button {
+                        store.addAppFromCurrentContext()
+                        selectedAppID = store.myApps.last?.id ?? selectedAppID
+                    } label: {
+                        Label("Add Current App", systemImage: "plus")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Spacer()
+                    Button {
+                        appPendingDeletion = selectedApp
+                    } label: {
+                        Image(systemName: "minus")
+                    }
+                    .disabled(selectedApp == nil)
                 }
                 .buttonStyle(.borderless)
                 .padding(10)
@@ -109,7 +113,9 @@ struct MyAppsSettingsView: View {
                                 .padding(.vertical, 8)
                         } else {
                             ForEach(app.shortcuts) { shortcut in
-                                ShortcutCard(shortcut: shortcut)
+                                ShortcutCard(shortcut: shortcut) {
+                                    shortcutPendingDeletion = shortcut
+                                }
                             }
                         }
                         Button { showingEditor = true } label: {
@@ -125,12 +131,46 @@ struct MyAppsSettingsView: View {
             ShortcutEditorView(app: selectedApp, store: store)
                 .frame(width: 460, height: 430)
         }
+        .alert("Delete shortcut?", isPresented: Binding(
+            get: { shortcutPendingDeletion != nil },
+            set: { if !$0 { shortcutPendingDeletion = nil } }
+        ), presenting: shortcutPendingDeletion) { shortcut in
+            Button("Delete", role: .destructive) {
+                guard let app = selectedApp else { return }
+                store.deleteShortcut(shortcut, from: app)
+                shortcutPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                shortcutPendingDeletion = nil
+            }
+        } message: { shortcut in
+            Text("Delete “\(shortcut.action)” from \(selectedApp?.name ?? "this app")?")
+        }
+        .alert("Remove app?", isPresented: Binding(
+            get: { appPendingDeletion != nil },
+            set: { if !$0 { appPendingDeletion = nil } }
+        ), presenting: appPendingDeletion) { app in
+            Button("Remove", role: .destructive) {
+                store.deleteApp(app)
+                selectedAppID = store.myApps.first?.id ?? ""
+                appPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                appPendingDeletion = nil
+            }
+        } message: { app in
+            Text("Remove \(app.name) and all of its saved shortcuts?")
+        }
     }
 }
 
 struct ShortcutCard: View {
     let shortcut: AppShortcut
+    let onDelete: () -> Void
     private var modifier: ModifierPreset { ModifierCatalog.preset(shortcut.modifierID) }
+    private var shortcutLabel: String {
+        modifier.hammerspoonModifiers.isEmpty ? shortcut.key : "+ \(shortcut.key)"
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -139,9 +179,14 @@ struct ShortcutCard: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .background(Color.accentColor.opacity(0.18), in: Capsule())
-            Text("+ \(shortcut.key)").font(.headline.monospaced())
+            Text(shortcutLabel).font(.headline.monospaced())
             Text(shortcut.action).foregroundStyle(.secondary)
             Spacer()
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete shortcut")
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -160,7 +205,7 @@ struct ShortcutEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Shortcut Mod").font(.title2.bold())
+            Text("Shortcut").font(.title2.bold())
             Text(app?.name ?? "App").foregroundStyle(.secondary)
             TextField("Action", text: $action)
                 .textFieldStyle(.roundedBorder)
@@ -233,18 +278,21 @@ struct CreateElementSheet: View {
     @State private var modifierID = ModifierCatalog.all[0].id
     @State private var readingKey = false
     @State private var monitor: Any?
+    private var canSave: Bool {
+        pending.kind != .menuOption && !key.isEmpty
+    }
 
     init(pending: PendingElementCapture, store: InspectorStore) {
         self.pending = pending
         self.store = store
         _appID = State(initialValue: pending.appID)
-        _action = State(initialValue: "Click \(pending.snapshot.displayTitle)")
+        _action = State(initialValue: "\(Self.actionVerb(for: pending.kind)) \(pending.snapshot.displayTitle)")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label("Create Element", systemImage: "target")
+                Label(pending.kind.rawValue, systemImage: "target")
                     .font(.title2.bold())
                 Spacer()
                 Text(pending.snapshot.captureMethod ?? "capture")
@@ -262,6 +310,11 @@ struct CreateElementSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if pending.kind == .menuOption {
+                    Text("Needs two captures")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -327,7 +380,7 @@ struct CreateElementSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(key.isEmpty)
+                .disabled(!canSave)
             }
         }
         .padding(24)
@@ -335,10 +388,16 @@ struct CreateElementSheet: View {
     }
 
     private var elementSummary: String {
-        let role = pending.snapshot.role ?? "unknown"
         let app = store.app(id: appID)?.name ?? pending.snapshot.appDisplayName
-        let actions = pending.snapshot.actions?.prefix(3).joined(separator: ", ") ?? ""
-        return actions.isEmpty ? "\(role) in \(app)" : "\(role) in \(app) - \(actions)"
+        return "\(pending.kind.rawValue) in \(app)"
+    }
+
+    private static func actionVerb(for kind: AdapterKind) -> String {
+        switch kind {
+        case .button: "Click"
+        case .menuOption: "Choose"
+        case .textField: "Focus"
+        }
     }
 
     private func toggleKeyReader() {
@@ -368,7 +427,7 @@ struct XSpoonSettingsView: View {
             Section("Global shortcuts") {
                 LabeledContent("Toggle menu", value: "⌃⌥O")
                 LabeledContent("Inspect current app", value: "⌃⌥I")
-                LabeledContent("Capture element", value: "⌃⌥E")
+                LabeledContent("Capture item", value: "⌃⌥E")
                 LabeledContent("Open inspector", value: "⌃⌥0")
             }
             Section("Hammerspoon") {
@@ -384,18 +443,15 @@ struct XSpoonSettingsView: View {
 struct MenuBarView: View {
     @ObservedObject var store: InspectorStore
     let onInspect: () -> Void
-    let onCapture: () -> Void
     let onOpenInspector: () -> Void
 
     init(
         store: InspectorStore,
         onInspect: @escaping () -> Void = {},
-        onCapture: @escaping () -> Void = {},
         onOpenInspector: @escaping () -> Void = {}
     ) {
         self.store = store
         self.onInspect = onInspect
-        self.onCapture = onCapture
         self.onOpenInspector = onOpenInspector
     }
 
@@ -420,10 +476,6 @@ struct MenuBarView: View {
                 Label("Inspect Current App", systemImage: "scope")
             }
             .buttonStyle(HammerMenuButtonStyle(accent: XSpoonTheme.red))
-            Button { onCapture() } label: {
-                Label("Capture Element", systemImage: "target")
-            }
-            .buttonStyle(HammerMenuButtonStyle(accent: XSpoonTheme.cyan))
             Button { onOpenInspector() } label: {
                 Label("Open Inspector", systemImage: "macwindow")
             }

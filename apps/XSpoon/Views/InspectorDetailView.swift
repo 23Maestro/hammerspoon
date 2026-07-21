@@ -54,15 +54,15 @@ struct InspectorDetailView: View {
     private var captureSection: some View {
         InspectorSection(title: "Captured Element", icon: "target") {
             if let snapshot = store.snapshot {
-                KeyValueRow(label: "Role", value: snapshot.role ?? snapshot.tag ?? "Unavailable")
+                KeyValueRow(label: "Type", value: snapshot.xRole)
                 KeyValueRow(label: "Title", value: snapshot.axTitle ?? snapshot.title ?? "Unavailable")
                 KeyValueRow(label: "Value", value: snapshot.axValue ?? snapshot.text ?? "Unavailable")
                 KeyValueRow(label: "Description", value: snapshot.axDescription ?? "Unavailable")
                 if let selector = snapshot.selector {
-                    KeyValueRow(label: "Selector", value: selector)
+                    KeyValueRow(label: "Page target", value: selector)
                 }
             } else {
-                Text("Arm Inspect, focus an element, then capture it through Hammerspoon.")
+                Text("No item captured")
                     .foregroundStyle(.secondary)
             }
         }
@@ -82,21 +82,16 @@ struct InspectorDetailView: View {
 
     private var adapterDescription: String {
         switch store.selectedAdapter {
-        case .setVariable: "Detect the action, locate the editable variable field, read the input after ‘to’, and validate the variable."
-        case .chooseFromMenu: "Read the prompt and menu items, then expose editable item controls when Shortcuts provides them."
-        case .askForInput: "Detect the action, read its input type, and expose the prompt as an editable field."
+        case .button: "Save this button so one shortcut can click it later."
+        case .menuOption: "Save what opens the menu, wait a moment, then save the option to click."
+        case .textField: "Save this text field so one shortcut can place your cursor here later."
         }
     }
 
     private var actionSection: some View {
         InspectorSection(title: "Next Action", icon: "bolt") {
-            HStack {
-                Button { store.status = "Save action is ready for Hammerspoon bridge" } label: {
-                    Label("Save Element Action", systemImage: "square.and.arrow.down")
-                }
-                Button { store.status = "Preset creation is ready for TypeScript compiler bridge" } label: {
-                    Label("Create App Preset", systemImage: "keyboard")
-                }
+            Button { _ = store.createElementFromCurrentTarget() } label: {
+                Label("Capture", systemImage: "square.and.arrow.down")
             }
         }
     }

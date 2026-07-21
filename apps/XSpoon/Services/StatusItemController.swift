@@ -28,7 +28,8 @@ final class StatusItemController: NSObject {
         }
         notificationObservers = [
             observeDistributed(.xspoonToggleMenu) { [weak self] in self?.togglePopover(nil) },
-            observe(.xspoonOpenInspector) { [weak self] in self?.openInspector() },
+            observe(.xspoonOpenInspector) { [weak self] in self?.toggleInspector() },
+            observeDistributed(.xspoonOpenInspector) { [weak self] in self?.toggleInspector() },
             observeDistributed(.xspoonInspectCurrentApp) { [weak self] in
                 self?.handleHammerspoonInspectionToggle()
             },
@@ -70,7 +71,6 @@ final class StatusItemController: NSObject {
             rootView: MenuBarView(
                 store: store,
                 onInspect: { [weak self] in self?.toggleInspectionFromMenu() },
-                onCapture: { [weak self] in self?.captureCurrentElement() },
                 onOpenInspector: { [weak self] in self?.openInspector() }
             )
         )
@@ -143,6 +143,15 @@ final class StatusItemController: NSObject {
         inspectorWindow?.makeKeyAndOrderFront(nil)
     }
 
+    private func toggleInspector() {
+        if inspectorWindow?.isVisible == true {
+            stopInspecting()
+            inspectorWindow?.orderOut(nil)
+        } else {
+            openInspector()
+        }
+    }
+
     private func handleCaptureUpdated() {
         store.refresh()
         stopInspecting()
@@ -181,7 +190,7 @@ final class StatusItemController: NSObject {
             appName: snapshot.appDisplayName,
             bundleIdentifier: snapshot.appBundleIdentifier,
             windowTitle: snapshot.windowTitle ?? "",
-            source: .accessibility
+            source: snapshot.captureSource
         )
         store.updateLiveSnapshot(snapshot, context: context)
         overlay.show(snapshot: snapshot, context: context, status: "Inspecting", autoDismiss: false, anchorAtMouse: true)

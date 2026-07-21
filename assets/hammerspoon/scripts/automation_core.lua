@@ -54,7 +54,9 @@ function M.dispatch(action)
         return false
       end
 
-      return result == nil and true or result
+      if result ~= false then
+        return result == nil and true or result
+      end
     end
   end
 

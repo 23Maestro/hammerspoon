@@ -56,10 +56,10 @@ function M.openSelectedContextMenu(method)
   end
 
   if method ~= "rightclick" then
-    local ok = pcall(function()
-      item:performAction("AXShowMenu")
+    local ok, result = pcall(function()
+      return item:performAction("AXShowMenu")
     end)
-    if ok then
+    if ok and result ~= false and result ~= nil then
       return true
     end
   end

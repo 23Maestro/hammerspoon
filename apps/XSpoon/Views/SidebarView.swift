@@ -15,21 +15,18 @@ struct SidebarView: View {
                 }
             }
 
-            Section("Inspect Sources") {
-                ForEach(CaptureSource.allCases) { source in
-                    Label(source.rawValue, systemImage: sourceIcon(source))
-                        .foregroundStyle(source == store.context.source ? .primary : .secondary)
-                }
+            Section("How XSpoon found it") {
+                Label(store.context.source.rawValue, systemImage: sourceIcon(store.context.source))
+                Text(store.context.source.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Section("Shortcut Adapters") {
-                ForEach(AdapterKind.allCases) { adapter in
-                    Button {
-                        store.selectedAdapter = adapter
-                    } label: {
-                        Label(adapter.rawValue, systemImage: adapter == store.selectedAdapter ? "checkmark.circle.fill" : "circle")
-                    }
-                    .buttonStyle(.plain)
+            Section("Captured as") {
+                if let snapshot = store.snapshot, let kind = AdapterKind.detect(snapshot) {
+                    Label(kind.rawValue, systemImage: "checkmark.circle.fill")
+                } else {
+                    Label("Unsupported item", systemImage: "xmark.circle")
                 }
             }
         }

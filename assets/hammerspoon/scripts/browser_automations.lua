@@ -9,6 +9,7 @@ local clipboardText
 local catalog = {}
 local notifier = require("scripts.notify")
 local liveInspectorTimer
+local liveInspectorCaptureTap
 local liveInspectorSignature = ""
 
 local function appleScriptString(value)
@@ -195,20 +196,33 @@ local function firstAttributeElement(element, attributes)
   return nil
 end
 
-local function walkAx(element, predicate, depth)
+local function walkAx(element, predicate, depth, seen)
   if not element or depth < 0 then
     return nil
   end
+
+  seen = seen or {}
+  local identity = tostring(element)
+  if seen[identity] then
+    return nil
+  end
+  seen[identity] = true
 
   if predicate(element) then
     return element
   end
 
-  local children = element:attributeValue("AXChildren") or {}
-  for _, child in ipairs(children) do
-    local found = walkAx(child, predicate, depth - 1)
-    if found then
-      return found
+  for _, attribute in ipairs({ "AXChildren", "AXVisibleChildren", "AXChildrenInNavigationOrder" }) do
+    local ok, children = pcall(function()
+      return element:attributeValue(attribute)
+    end)
+    if ok and type(children) == "table" then
+      for _, child in ipairs(children) do
+        local found = walkAx(child, predicate, depth - 1, seen)
+        if found then
+          return found
+        end
+      end
     end
   end
 
@@ -797,17 +811,48 @@ local function updateLiveInspector()
 end
 
 function M.toggleLiveInspector()
-  if liveInspectorTimer then
+  local function stopLiveInspector()
     liveInspectorTimer:stop()
     liveInspectorTimer = nil
+    if liveInspectorCaptureTap then
+      liveInspectorCaptureTap:stop()
+      liveInspectorCaptureTap = nil
+    end
     liveInspectorSignature = ""
+  end
+
+  if liveInspectorTimer then
+    stopLiveInspector()
     return hs.json.encode({ status = "live-inspector-stopped" })
   end
 
   liveInspectorSignature = ""
   liveInspectorTimer = hs.timer.doEvery(0.12, updateLiveInspector)
+  liveInspectorCaptureTap = hs.eventtap.new({
+    hs.eventtap.event.types.leftMouseDown,
+    hs.eventtap.event.types.keyDown,
+  }, function(event)
+    if event:getType() == hs.eventtap.event.types.keyDown then
+      if event:getKeyCode() == hs.keycodes.map.escape then
+        stopLiveInspector()
+        hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
+        return true
+      end
+      return false
+    end
+
+    updateLiveInspector()
+    stopLiveInspector()
+    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
+    return true
+  end)
+  liveInspectorCaptureTap:start()
   updateLiveInspector()
-  return hs.json.encode({ status = "live-inspector-started", path = LIVE_LATEST_ELEMENT_PATH })
+  return hs.json.encode({
+    status = "live-inspector-started",
+    instruction = "click-to-capture",
+    path = LIVE_LATEST_ELEMENT_PATH,
+  })
 end
 
 function M.liveInspectorActive()
@@ -888,11 +933,11 @@ function M.openFocusedLocalContextMenu()
     })
   end
 
-  local showMenuOk = pcall(function()
-    target:performAction("AXShowMenu")
+  local showMenuOk, showMenuResult = pcall(function()
+    return target:performAction("AXShowMenu")
   end)
 
-  if showMenuOk then
+  if showMenuOk and showMenuResult ~= false and showMenuResult ~= nil then
     notify("Context Menu")
     return hs.json.encode({
       status = "opened-context-menu",
@@ -960,37 +1005,24 @@ function M.rightClickFocusedLocalTarget()
 end
 
 local function rootForLocalAction(action)
-  local app
-  if action.appBundleID and action.appBundleID ~= "" then
-    app = hs.application.get(action.appBundleID)
-    if not app then
-      hs.application.launchOrFocusByBundleID(action.appBundleID)
-      hs.timer.usleep(300000)
-      app = hs.application.get(action.appBundleID)
-    end
-  end
-
-  if not app and action.appPath and action.appPath ~= "" then
-    hs.application.open(action.appPath)
-    hs.timer.usleep(300000)
-    app = hs.application.get(action.appBundleID or "") or hs.application.find(action.appName or "")
-  end
-
-  if not app and action.appName and action.appName ~= "" then
-    app = hs.application.find(action.appName)
-  end
-
-  if app then
-    app:activate()
-  else
-    app = hs.application.frontmostApplication()
-  end
-
+  local app = hs.application.frontmostApplication()
   if not app then
     return nil, "missing-app"
   end
 
+  if action.appBundleID and action.appBundleID ~= "" and app:bundleID() ~= action.appBundleID then
+    return nil, "wrong-app"
+  end
+
   local win = app:focusedWindow()
+  if not win then
+    for _, candidate in ipairs(app:allWindows()) do
+      if candidate:isStandard() then
+        win = candidate
+        break
+      end
+    end
+  end
   if not win then
     return nil, "missing-window"
   end
@@ -1042,6 +1074,25 @@ local function findLocalActionElement(action)
     return focused, nil
   end
 
+  -- Electron/WebView apps can expose the element directly under a screen point
+  -- while omitting it from AXChildren. Rebuild the saved point relative to the
+  -- current window, then accept it only when the saved AX identity still matches.
+  local savedFrame = action.frame
+  local savedWindowFrame = action.windowFrame
+  local currentWindowFrame = axFrame(root)
+  if type(savedFrame) == "table" and type(savedWindowFrame) == "table" and currentWindowFrame
+      and savedFrame.x and savedFrame.y and savedWindowFrame.x and savedWindowFrame.y then
+    local relativeX = savedFrame.x - savedWindowFrame.x + ((savedFrame.w or 1) / 2)
+    local relativeY = savedFrame.y - savedWindowFrame.y + ((savedFrame.h or 1) / 2)
+    local pointElement = hs.axuielement.systemElementAtPosition({
+      x = currentWindowFrame.x + relativeX,
+      y = currentWindowFrame.y + relativeY,
+    })
+    if pointElement and matches(pointElement) then
+      return pointElement, nil
+    end
+  end
+
   return walkAx(root, matches, 8), nil
 end
 
@@ -1067,6 +1118,16 @@ local function clickLocalActionFrame(action)
   })
 end
 
+local function localReplayAction(action)
+  if action.axAction and action.axAction ~= "" then
+    return action.axAction
+  end
+  if action.captureType == "Text field" or action.axRole == "AXTextField" or action.axRole == "AXTextArea" then
+    return "AXFocus"
+  end
+  return "AXPress"
+end
+
 local function pressLocalAction(action)
   local element, errorMessage = findLocalActionElement(action)
   if not element then
@@ -1082,16 +1143,35 @@ local function pressLocalAction(action)
     return hs.json.encode({ status = "missing-local-element", message = errorMessage or "No matching AX element" })
   end
 
-  local ok = pcall(function()
-    element:performAction("AXPress")
+  local replayAction = localReplayAction(action)
+  if replayAction == "AXFocus" then
+    local ok = pcall(function()
+      element:setAttributeValue("AXFocused", true)
+    end)
+    local focused = ok and axRawAttribute(element, "AXFocused") == true
+    if not focused then
+      return hs.json.encode({ status = "local-focus-failed" })
+    end
+    return hs.json.encode({
+      status = "focused-local-element",
+      role = axAttribute(element, "AXRole"),
+      title = axAttribute(element, "AXTitle"),
+      value = axAttribute(element, "AXValue"),
+      description = axAttribute(element, "AXDescription"),
+    })
+  end
+
+  local ok, result = pcall(function()
+    return element:performAction(replayAction)
   end)
 
-  if not ok then
-    return hs.json.encode({ status = "local-press-failed" })
+  if not ok or result == false or result == nil then
+    return hs.json.encode({ status = "local-action-failed", action = replayAction })
   end
 
   return hs.json.encode({
-    status = "pressed-local-element",
+    status = "performed-local-action",
+    action = replayAction,
     role = axAttribute(element, "AXRole"),
     title = axAttribute(element, "AXTitle"),
     value = axAttribute(element, "AXValue"),
@@ -2073,13 +2153,29 @@ function M.bindContextMenuHotkey()
 end
 
 function M.bindElementActionHotkeys()
+  return 0
+end
+
+function M.reloadElementActionHotkeys(actionID)
+  if actionID and actionID ~= "" then
+    return hs.json.encode({
+      actionID = actionID,
+      status = "capture-saved-module-required",
+      saved = elementActionById(actionID) ~= nil,
+      ready = false,
+    })
+  end
+  return hs.json.encode({ status = "capture-catalog-only", count = 0 })
+end
+
+function M.savedElementHotkeyCount()
+  local count = 0
   for _, action in ipairs(readElementActions()) do
     if action.hotkey and action.hotkey.key and action.hotkey.modifiers then
-      hs.hotkey.bind(action.hotkey.modifiers, action.hotkey.key, function()
-        runElementAction(action)
-      end)
+      count = count + 1
     end
   end
+  return count
 end
 
 return M

@@ -1,11 +1,19 @@
 import Foundation
 
 enum CaptureSource: String, CaseIterable, Identifiable {
-    case accessibility = "Accessibility"
-    case dom = "DOM"
-    case webView = "WebView"
+    case accessibility = "App control"
+    case dom = "Web page"
+    case webView = "Selected item"
 
     var id: String { rawValue }
+
+    var explanation: String {
+        switch self {
+        case .accessibility: "XSpoon can see the controls shared with macOS."
+        case .dom: "XSpoon can see the controls inside the web page."
+        case .webView: "XSpoon can see the selected item before opening its menu."
+        }
+    }
 }
 
 struct AppContext: Equatable {
@@ -56,6 +64,57 @@ struct ElementSnapshot: Codable, Equatable {
     var appBundleIdentifier: String {
         bundleID?.isEmpty == false ? bundleID! : ""
     }
+
+    var captureSource: CaptureSource {
+        if kind == "hammerspoon-browser-element" || selector?.isEmpty == false {
+            return .dom
+        }
+        return .accessibility
+    }
+
+    var xRole: String {
+        let value = role ?? tag ?? "Element"
+        let names = [
+            "AXButton": "XButton",
+            "AXMenu": "XMenu",
+            "AXMenuItem": "XMenuOption",
+            "AXPopUpButton": "XPopupMenu",
+            "AXTextField": "XTextField",
+            "AXTextArea": "XTextField",
+            "AXCheckBox": "XCheckbox",
+            "AXRadioButton": "XChoice",
+            "AXLink": "XLink",
+            "AXStaticText": "XText",
+            "AXImage": "XImage",
+            "AXRow": "XRow",
+            "AXCell": "XCell",
+            "AXGroup": "XArea",
+            "AXScrollArea": "XScrollArea",
+            "AXWindow": "XWindow"
+        ]
+        if let name = names[value] { return name }
+        if value.hasPrefix("AX") { return "X" + value.dropFirst(2) }
+        if value.hasPrefix("X") { return value }
+        return "X" + value.prefix(1).uppercased() + value.dropFirst()
+    }
+
+    var xActions: [String] {
+        let names = [
+            "AXPress": "Click",
+            "AXShowMenu": "Open menu",
+            "AXConfirm": "Confirm",
+            "AXCancel": "Cancel",
+            "AXIncrement": "Increase",
+            "AXDecrement": "Decrease",
+            "AXRaise": "Bring forward",
+            "AXShowDefaultUI": "Show default"
+        ]
+        return (actions ?? []).map { action in
+            if let name = names[action] { return name }
+            if action.hasPrefix("AX") { return String(action.dropFirst(2)) }
+            return action
+        }
+    }
 }
 
 struct SnapshotRect: Codable, Equatable {
@@ -91,6 +150,7 @@ struct PendingElementCapture: Identifiable, Equatable {
     let id = UUID()
     var snapshot: ElementSnapshot
     var appID: String
+    var kind: AdapterKind
 }
 
 struct ModifierPreset: Identifiable, Hashable {
@@ -102,6 +162,8 @@ struct ModifierPreset: Identifiable, Hashable {
 }
 
 enum ModifierCatalog {
+    static let singleKey = ModifierPreset(id: "single-key", label: "Single key", badge: "KEY", color: "gray", hammerspoonModifiers: [])
+
     static let all: [ModifierPreset] = [
         ModifierPreset(id: "right-command", label: "Right Command", badge: "R CMD", color: "red", hammerspoonModifiers: ["ctrl", "alt"]),
         ModifierPreset(id: "right-shift", label: "Right Shift", badge: "R SHFT", color: "blue", hammerspoonModifiers: ["alt", "cmd"]),
@@ -113,7 +175,8 @@ enum ModifierCatalog {
     ]
 
     static func preset(_ id: String) -> ModifierPreset {
-        all.first(where: { $0.id == id }) ?? all[0]
+        if id == singleKey.id { return singleKey }
+        return all.first(where: { $0.id == id }) ?? all[0]
     }
 }
 
@@ -137,7 +200,7 @@ enum MyAppsCatalog {
         ]),
         MyAppDefinition(id: "obsidian", name: "Obsidian", bundleIdentifier: "md.obsidian", icon: "diamond"),
         MyAppDefinition(id: "chatgpt", name: "ChatGPT", bundleIdentifier: "com.openai.codex", icon: "bubble.left.and.bubble.right", shortcuts: [
-            AppShortcut(id: "chatgpt-shortcut-s", action: "Focus Shortcut Search", key: "S", modifierID: "right-command")
+            AppShortcut(id: "chatgpt-shortcut-s", action: "Focus Shortcut Search", key: "S", modifierID: "single-key")
         ]),
         MyAppDefinition(id: "system-settings", name: "System Settings", bundleIdentifier: "com.apple.systempreferences", icon: "gearshape"),
         MyAppDefinition(id: "keyboard-maestro", name: "Keyboard Maestro", bundleIdentifier: "com.stairways.keyboardmaestro.editor", icon: "keyboard", shortcuts: [
@@ -149,9 +212,33 @@ enum MyAppsCatalog {
 }
 
 enum AdapterKind: String, CaseIterable, Identifiable {
-    case setVariable = "Set Variable"
-    case chooseFromMenu = "Choose from Menu"
-    case askForInput = "Ask for Input"
+    case button = "Button"
+    case menuOption = "Menu option"
+    case textField = "Text field"
 
     var id: String { rawValue }
+
+    static func detect(_ snapshot: ElementSnapshot) -> AdapterKind? {
+        switch snapshot.role {
+        case "AXMenuItem":
+            return .menuOption
+        case "AXTextField", "AXTextArea", "AXSearchField":
+            return .textField
+        case "AXButton", "AXPopUpButton":
+            return .button
+        default:
+            break
+        }
+
+        switch snapshot.tag?.lowercased() {
+        case "textarea":
+            return .textField
+        case "input":
+            return .textField
+        case "button":
+            return .button
+        default:
+            return nil
+        }
+    }
 }
