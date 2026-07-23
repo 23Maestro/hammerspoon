@@ -1,151 +1,77 @@
-# XSpoon Clean Contract — Design
+# XSpoon Clean Contract
 
-## Problem
+## Boundaries
 
-`browser_automations.lua` grew to 2,282 lines by absorbing seven unrelated
-responsibilities: Chrome JS execution, job-application form-filling, the
-Raycast "List Scripts" catalog, live AX inspection, local element capture,
-element-action replay, and JSON persistence for XSpoon captures. Because
-capture/dispatch logic for XSpoon lived inside a file meant for Chrome/Raycast
-tooling, the two systems tangled:
-
-- `ModuleGenerator.isBuiltIn()` only protects 4 of the 10 registered apps
-  (`chrome, codex, finder, keyboard_maestro` — missing `eagle, canva, notion,
-  obsidian, raycast, xspoon_menu`; it also lists `prospect_id`, which is not
-  a registered app at all). Saving a captured shortcut for any of the six
-  unprotected apps would silently overwrite their hand-written, working
-  `.lua` module.
-- An uncommitted `bindGeneratedHotkeys()` function bound arbitrary captured
-  hotkeys with no collision check against the reserved `⌃⌥P/R/C/S/V/M` namespace
-  already used by proven modules.
-- `saveElementShortcut()` commits to the visible UI list before module
-  generation and reload succeed, so failures leave the UI claiming "saved"
-  while Hammerspoon has nothing.
-- Three Lua functions (`bindElementActionHotkeys`, `reloadElementActionHotkeys`,
-  `savedElementHotkeyCount`) and two Swift methods
-  (`reloadSavedElementRoutes` ×2) are dead — call sites were removed in a
-  prior refactor but the functions were left behind.
-
-## Goal
-
-A single, repeatable, plugin-shaped contract for per-app automation that:
-1. Keeps the proven per-app module shape (`M.id`, `M.matches`, `M.actions`)
-   completely unchanged.
-2. Separates XSpoon's control surface from Raycast/Chrome/job-filling tooling
-   so neither can accidentally corrupt the other.
-3. Makes captured shortcuts *become* real per-app modules through one atomic,
-   verifiable save path — never a parallel JSON-only dispatch path.
-4. Never touches Karabiner. XSpoon reads/labels the modifier presets Karabiner
-   already remaps (Right Command → `ctrl+alt`, etc.); it never writes
-   Karabiner configuration.
-
-## Non-goals
-
-- No change to the five canonical semantic actions (`primary/search/copy/
-  shortcutS/voicemail`) or their bindings.
-- No change to Karabiner-side remapping.
-- Job-filling data/functionality is kept, not deleted — only relocated.
-
-## Architecture — three surfaces
-
-| Surface | Owns | Lives in |
+| Surface | Owns | Does not own |
 |---|---|---|
-| **Raycast extension** | Chrome JS execution engine, job-application form-filling (Prospect ID, NurseHub, HSN, WFLA, Freelance Broadcast, Amazon Flex, Pepsi, Optimal, GAT, SMH, education fillers), selector picker, the `list()`/`execute()` catalog powering "List Scripts" | `raycast_scripts.lua` (renamed/stripped from `browser_automations.lua`) |
-| **XSpoon control surface** | Per-app dispatch core, capture (live inspector + local AX + Chrome-site element capture), element-actions JSON store, module generation/reload, hotkey collision checking | `XSpoon.spoon/init.lua` |
-| **Per-app plugins** | One file per app: `M.id`, `M.matches(context)`, `M.actions{}`, optional `M.start()` | `XSpoon.spoon/apps/*.lua` |
+| Raycast | Job helpers and Chrome DOM scripts, including Prospect ID | XSpoon capture or saved shortcuts |
+| XSpoon app | Capture, app catalog, save, deletion | Accessibility replay or global hotkeys |
+| Hammerspoon | AX/DOM replay, per-app modal runtime | A second configuration UI |
 
-`XSpoon.spoon` is a formal Hammerspoon Spoon (`init.lua` inside
-`XSpoon.spoon/`, loaded via `hs.loadSpoon`), chosen deliberately over a plain
-module because the control surface *is* XSpoon's product surface — repeatable,
-shapeable, proper packaging matters here. Per-app plugins remain plain Lua
-files loaded internally by the Spoon (not each its own Spoon), preserving
-today's proven contract exactly.
+## Runtime
 
-The repo/runtime symlink split is preserved: `assets/hammerspoon/XSpoon.spoon/`
-in the repo, symlinked to `~/.hammerspoon/Spoons/XSpoon.spoon/` at runtime.
-Generated per-app modules are written to
-`~/.hammerspoon/Spoons/XSpoon.spoon/apps/<slug>.lua` (runtime) — the source
-repo only tracks hand-written built-in modules, matching how generated files
-work today (never committed, generated on demand).
+There is exactly one per-app hotkey mechanism: `hs.hotkey.modal` plus
+`hs.application.watcher`, scoped one modal per app. `core.dispatch()`'s
+cross-app walk over `matches()` predicates is retired entirely — it is not
+kept for the canonical five and layered under the new mechanism for captures.
+Modal entry already selects the correct app; there is nothing left to walk.
 
-## Chrome — two identities
+`init.lua` loads `XSpoon.spoon`. At load, the Spoon builds one
+`hs.hotkey.modal` per registered app (hand-written module or JSON capture) and
+binds every action that app owns — its hand-written semantic actions
+(`primary/search/copy/shortcutS/voicemail`, etc.) and its captured
+shortcuts — directly into that app's modal. A single `hs.application.watcher`
+tracks exactly one active-modal reference. On activation it exits whatever
+modal is currently held (if any) and enters the new frontmost app's modal,
+then updates the reference — so a late deactivation event for the app just
+left can never exit the modal that now belongs to the newly frontmost app.
+Only one modal is ever active system-wide.
 
-Chrome appears in both surfaces, deliberately:
+**Enforcement, not detection:** two apps' shortcuts on the identical key
+combo cannot collide, because only one app's modal exists in the active state
+at any moment — there is no shared global table for them to contend over.
+The one collision that remains possible is *within* a single app's own
+modal (two of its own bindings landing on the same key), checked once at
+save time.
 
-- **`raycast_scripts.lua`**: generic Chrome JS-execution engine, used only for
-  job-filling and the Raycast catalog. Unrelated to XSpoon captures.
-- **`XSpoon.spoon/apps/chrome.lua`**: site-scoped module. `M.matches` checks
-  both bundle ID and active site/URL pattern, the same way other modules match
-  a bundle ID alone. A captured shortcut on `docs.google.com` and one on
-  `mail.google.com` are different matches. Capture types (button, menu-option,
-  text-field) are identical to the AX-based flow — same idea, DOM replay
-  instead of `AXPress` replay.
+Saved actions are data, not generated Lua modules. Their browser identity is
+URL/selector/title; their native or web-app identity is bundle ID plus AX
+role/title/value/description/actions. The three capture types are button, menu
+option, and focus field.
 
-## Hotkey binding — collision detection, no artificial gate
+## Hook and test — enforcing single-active-modal
 
-Captured shortcuts are not restricted to the five canonical semantic names.
-Any modifier+key combination is allowed, gated only by verifiable reality:
+A small runtime hook in `XSpoon.spoon` exposes the currently-held modal
+reference (e.g. `XSpoon.activeModalAppID()`), so the invariant is directly
+observable rather than assumed. The proof step below exercises it. A minimal
+automated check: switch focus rapidly between two apps with bound modals and
+assert `activeModalAppID()` never reports both, and never reports the
+previous app after the watcher's activation callback has fired for the new
+one — this is the concrete regression test for the community-documented
+double-fire caveat (`application.watcher` sends activate-then-deactivate on
+every switch).
 
-1. Before binding, query `hs.hotkey.getHotkeys()` for the target combo.
-2. **Collision** → refuse the save, report exactly what already owns the
-   combo (e.g. "⌃⌥S is bound to Notion's shortcutS"), let the user pick another
-   key. No silent double-bind, no shadowing.
-3. **No collision** → bind it, through `XSpoon.spoon`'s dispatch core, the same
-   way the five canonical bindings work today.
+## Save and delete
 
-This replaces the deleted, uncommitted `bindGeneratedHotkeys()` — same intent,
-now provably safe.
+XSpoon rejects a same-app duplicate shortcut before writing JSON — checked
+against that app's modal binding table only, since cross-app collision is
+structurally impossible. It writes the JSON, reloads Hammerspoon (which
+rebuilds every app's modal from its hand-written actions plus current JSON),
+then updates its visible catalog. Delete removes the JSON entry, reloads
+Hammerspoon, and removes the matching catalog entry. Hand-written modules
+under `assets/hammerspoon/scripts/apps/` are never generated, overwritten, or
+deleted — their semantic actions are read and bound into the app's modal at
+Spoon load time, same as before, just via modal instead of global bind.
 
-## Save flow — atomic
+## Proof
 
-`saveElementShortcut` order changes to:
-
-1. Write `browser_element_actions.json`.
-2. Generate/patch `XSpoon.spoon/apps/<slug>.lua`.
-3. Hotkey collision check (previous section) — abort and roll back JSON write
-   on conflict.
-4. Reload Hammerspoon; confirm the module loaded.
-5. Only then commit to the visible shortcut list / UserDefaults.
-
-Any failure at steps 1-4 leaves the UI state untouched and surfaces the real
-error instead of a false "saved."
-
-## Delete — two-store rule, extended
-
-Deleting a shortcut removes it from `browser_element_actions.json` **and**
-regenerates (or deletes, if none remain) the owning app's generated module,
-then reloads. Deleting an app removes every generated module it owns.
-
-Built-in modules — `chrome, codex, finder, keyboard_maestro, eagle, canva,
-notion, obsidian, raycast, xspoon_menu` — are never touched by generation or
-delete. `ModuleGenerator.isBuiltIn()` is corrected to list all ten (currently
-lists six, missing `eagle, canva, notion, obsidian, raycast, xspoon_menu`).
-
-## Dead code removed
-
-- Lua: `M.bindElementActionHotkeys()`, `M.reloadElementActionHotkeys()`,
-  `M.savedElementHotkeyCount()`.
-- Swift: `HammerspoonClient.reloadSavedElementRoutes(actionID:)` and
-  `reloadSavedElementRoutes()`.
-- Runtime test artifacts (e.g. `textedit.lua`) left over from manual testing.
-- The uncommitted, unshipped `bindGeneratedHotkeys()` in `automation_core.lua`
-  (superseded by the collision-checked binder inside `XSpoon.spoon`).
-
-## Testing / proof of migration
-
-Since this is a repackaging of proven logic onto a new surface (plain
-requires → formal Spoon), the bar is "prove it still works the same,"
-per-module:
-
-1. For each built-in app module, trigger its existing proven shortcut
-   (e.g. Notion voicemail toggle, Eagle secondary-click, Codex shortcutS) and
-   confirm identical behavior after the Spoon migration.
-2. Capture one new shortcut end-to-end (save → module generated in
-   `XSpoon.spoon/apps/` → reload → physical hotkey fires) for an app that was
-   previously unprotected (e.g. Eagle) and confirm it does **not** overwrite
-   the hand-written module.
-3. Attempt to capture a shortcut on a combo already owned by a canonical
-   binding (e.g. ⌃⌥S) and confirm the save is refused with a clear collision
-   message, not a silent double-bind.
-4. Delete the captured shortcut from (2) and confirm the generated module and
-   JSON entry are both removed, built-in modules are unaffected.
+1. Capture and save one button, menu option, and focus field.
+2. Confirm each modal exists only while its app is frontmost, via
+   `XSpoon.activeModalAppID()`.
+3. Confirm the identical key combo fires the correct, different action in two
+   different apps — no shared table, no shadowing.
+4. Rapidly alt-tab between two bound apps and confirm the double-fire/late
+   deactivation caveat never leaves the wrong modal active.
+5. Confirm a same-app duplicate key is refused at save time.
+6. Delete one capture and confirm both stores no longer contain it and its
+   modal binding is gone after reload.
