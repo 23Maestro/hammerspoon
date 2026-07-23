@@ -47,29 +47,37 @@ point worked every time. The AX identity was correct; the AX replay action
 was not reliable. This generalizes past Premiere — any capture can hit an app
 whose AX replay is flaky even though its AX identity resolves fine.
 
-No new tool is needed for this. Hammerspoon already has both halves, already
-in use elsewhere in this codebase:
+Hammerspoon's own click execution (`hs.eventtap.leftClick`) is the unreliable
+half — that is what failed in Premiere even when the AX identity resolved
+correctly. Keyboard Maestro's click execution is the half that is proven
+reliable. So the split is:
 
-- **Capture**: `hs.mouse.absolutePosition()` — already called every 120ms by
-  the live inspector's `updateLiveInspector()` — is read at the moment of
-  `leftMouseDown` and stored as the capture's real click point, alongside (not
-  instead of) its AX role/title/value/description.
-- **Replay**: `hs.eventtap.leftClick()` at that stored point — already how
-  `clickLocalActionFrame()` behaves today, just currently wired as the
-  fallback of last resort, tried only when no AX matcher exists at all.
+- **Capture** (Hammerspoon): `hs.mouse.absolutePosition()` — already called
+  every 120ms by the live inspector's `updateLiveInspector()` — is read at
+  the moment of `leftMouseDown` and stored as the capture's real click point,
+  alongside (not instead of) its AX role/title/value/description. Hammerspoon
+  only captures and stores this coordinate; it does not click with it.
+- **Replay** (Keyboard Maestro, triggered from Hammerspoon): Hammerspoon
+  passes the stored coordinate to Keyboard Maestro — setting the target x/y
+  as KM variables and triggering the existing slotized one-click template
+  (`01_interface_move-or-click-mouse-one-click.kmmacros`) — and KM performs
+  the actual physical click. `hs.eventtap.leftClick()` is not used for
+  button-capture replay; `clickLocalActionFrame()`'s direct-click path is
+  replaced by this KM handoff.
 
-The only change is ordering: for button captures, physical click is tried
-**first**, with AX-based `findLocalActionElement` + `performAction` as the
-fallback, not the other way around. Menu option and focus field captures are
-unaffected — they still replay through `AXShowMenu`/`AXFocus` since those
-AX paths are the ones actually verified to work for those capture types.
+The only change to the AX side is ordering: KM-driven physical click is tried
+**first** for button captures, with AX-based `findLocalActionElement` +
+`performAction` as the fallback, not the other way around. Menu option and
+focus field captures are unaffected — they still replay through
+`AXShowMenu`/`AXFocus` since those AX paths are the ones actually verified to
+work for those capture types.
 
-This is a capture/replay policy change inside XSpoon's own pipeline. It does
-not touch Karabiner, Keyboard Maestro, or Premiere's existing motion-property
-macros (Horizontal/Vertical/Scale/Rotate) — those stay exactly as they are,
-on their own rails, unmigrated. Premiere becoming a registered XSpoon app
-(for other, non-motion-layer shortcuts) is possible future scope, not part of
-this pass.
+This is a capture/replay policy change inside XSpoon's own pipeline, adding a
+Keyboard Maestro handoff for button replay specifically. It does not touch
+Karabiner, or Premiere's existing motion-property macros
+(Horizontal/Vertical/Scale/Rotate) — those stay exactly as they are, on their
+own rails, unmigrated. Premiere becoming a registered XSpoon app (for other,
+non-motion-layer shortcuts) is possible future scope, not part of this pass.
 
 ## Hook and test — enforcing single-active-modal
 
@@ -108,4 +116,5 @@ Spoon load time, same as before, just via modal instead of global bind.
 6. Delete one capture and confirm both stores no longer contain it and its
    modal binding is gone after reload.
 7. Capture a button in an app with known-flaky AX replay and confirm the
-   physical click point fires reliably without needing an AX fallback.
+   Keyboard Maestro click handoff fires reliably at the stored coordinate
+   without needing an AX fallback.
