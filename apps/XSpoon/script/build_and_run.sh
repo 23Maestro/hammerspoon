@@ -18,6 +18,9 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 ICON_SOURCE="$ROOT_DIR/Resources/XSpoonMenu.icns"
 SIGNING_IDENTITY="${XSPOON_SIGNING_IDENTITY:-Apple Development: jay23singleton@gmail.com (U7MJ89XZ2M)}"
 
+node "$ROOT_DIR/../../scripts/modifier-ledger.mjs" check
+cp "$ROOT_DIR/../../assets/hammerspoon/registry/modifier-ledger.jsonl" "$ROOT_DIR/Resources/ModifierLedger.jsonl"
+
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 pkill -x "XSpoonMenu" >/dev/null 2>&1 || true
 rm -rf "$DIST_DIR"
@@ -52,8 +55,14 @@ PLIST
 
 cp "$ICON_SOURCE" "$APP_RESOURCES/XSpoonMenu.icns"
 
-# Accessibility permissions survive rebuilds only when the app keeps a stable signing identity.
-codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP_BUNDLE"
+# Accessibility permissions survive rebuilds best when the app keeps a stable
+# signing identity. Local CI shells may not have that identity unlocked, so fall
+# back to ad-hoc signing for build verification instead of failing the launch.
+if security find-identity -v -p codesigning | grep -F "$SIGNING_IDENTITY" >/dev/null 2>&1; then
+  codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$APP_BUNDLE"
+else
+  codesign --force --sign - --timestamp=none "$APP_BUNDLE"
+fi
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 rm -rf "$INSTALL_BUNDLE"

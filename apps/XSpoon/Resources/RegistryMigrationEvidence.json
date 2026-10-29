@@ -1,0 +1,11 @@
+[
+  {
+    "id": "system-settings-492E530A-4951-4AA7-B2D0-FDEFAF62E860",
+    "bundleID": "com.apple.systempreferences",
+    "role": "AXButton",
+    "description": "Keyboard Shortcuts\u2026",
+    "hotkey": { "key": "s", "modifiers": ["alt", "cmd"] },
+    "verifiedAt": "2026-10-28",
+    "reason": "User-confirmed working; native dialog readback and approximately 206 ms replay recorded. Do not retest without a new failure."
+  }
+]

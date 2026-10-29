@@ -5,13 +5,58 @@ local LATEST_ELEMENT_PATH = hs.configdir .. "/browser_element_latest.json"
 local LOCAL_LATEST_ELEMENT_PATH = hs.configdir .. "/local_element_latest.json"
 local LIVE_LATEST_ELEMENT_PATH = hs.configdir .. "/live_element_latest.json"
 local ELEMENT_ACTIONS_PATH = hs.configdir .. "/browser_element_actions.json"
+local ACTION_REGISTRY_PATH = hs.configdir .. "/xspoon_registry.json"
 local clipboardText
 local catalog = {}
 local notifier = require("scripts.notify")
 local liveInspectorTimer
 local liveInspectorCaptureTap
 local liveInspectorSignature = ""
+local INSPECTION_STATE_PATH = hs.configdir .. "/xspoon_inspection_state.json"
+local liveInspectorBundleID
+local resolvedLocalTargets = {}
+
+local function localActionKey(action)
+  return table.concat({ action.appBundleID or "", action.axRole or "", action.axTitle or "",
+    action.axDescription or "", action.axIdentifier or "" }, "\0")
+end
 local MENU_ITEMS_PATH = hs.configdir .. "/menu_items_latest.json"
+local WEB_APP_BUNDLE_IDS = {
+  ["com.openai.codex"] = true,
+  ["tw.ogdesign.eagle"] = true,
+  ["com.eagle.cool"] = true,
+  ["notion.id"] = true,
+  ["com.canva.CanvaDesktop"] = true,
+}
+
+local function writeJSON(path, payload)
+  local ok, encoded = pcall(hs.json.encode, payload, true)
+  if not ok or not encoded then return false, "Could not encode capture JSON" end
+  local file, err = io.open(path .. ".tmp", "w")
+  if not file then return false, err end
+  local written, writeError = file:write(encoded)
+  local closed, closeError = file:close()
+  if not written or not closed then return false, writeError or closeError end
+  return os.rename(path .. ".tmp", path)
+end
+
+function M.inspectionStatus()
+  return { active = liveInspectorTimer ~= nil, bundleID = liveInspectorBundleID or "" }
+end
+
+local function publishInspectionState()
+  writeJSON(INSPECTION_STATE_PATH, M.inspectionStatus())
+  hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
+end
+
+function M.stopLiveInspector()
+  if liveInspectorTimer then liveInspectorTimer:stop(); liveInspectorTimer = nil end
+  if liveInspectorCaptureTap then liveInspectorCaptureTap:stop(); liveInspectorCaptureTap = nil end
+  liveInspectorSignature = ""
+  liveInspectorBundleID = nil
+  publishInspectionState()
+  return hs.json.encode({ status = "live-inspector-stopped", active = false })
+end
 
 local function appleScriptString(value)
   return '"' .. tostring(value):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -560,14 +605,10 @@ local function persistLatestElement()
     return false
   end
 
-  local file = io.open(LATEST_ELEMENT_PATH, "w")
-  if not file then
-    return false
-  end
-
-  file:write(value)
-  file:close()
-  return true
+  decoded.captureID = hs.host.uuid()
+  decoded.bundleID = CHROME_BUNDLE_ID
+  decoded.appName = "Google Chrome"
+  return writeJSON(LATEST_ELEMENT_PATH, decoded)
 end
 
 function M.clickClipboardSelector()
@@ -699,12 +740,14 @@ local function localElementPayload(element, captureMethod)
   local win = app and app:focusedWindow()
   local frame = axFrame(element)
   local windowFrame = plainRect(win and win:frame())
+  local bundleID = app and app:bundleID() or ""
 
   return {
     kind = "hammerspoon-local-element",
     captureMethod = captureMethod or "focused",
+    surface = bundleID == CHROME_BUNDLE_ID and "website" or (WEB_APP_BUNDLE_IDS[bundleID] and "webApp" or "osApp"),
     appName = app and app:name() or "",
-    bundleID = app and app:bundleID() or "",
+    bundleID = bundleID,
     appPath = app and app:path() or "",
     windowTitle = win and win:title() or "",
     role = axAttribute(element, "AXRole"),
@@ -726,7 +769,8 @@ local function liveElementPayload(element, point)
     return nil
   end
 
-  local window = axRawAttribute(element, "AXWindow")
+  local focusedWindow = app and app:focusedWindow()
+  local window = axRawAttribute(element, "AXWindow") or (focusedWindow and hs.axuielement.windowElement(focusedWindow))
   local actions = {}
   local actionsOk, actionNames = pcall(function()
     return element:actionNames()
@@ -738,6 +782,7 @@ local function liveElementPayload(element, point)
   return {
     kind = "hammerspoon-live-element",
     captureMethod = "live-hover",
+    surface = bundleID == CHROME_BUNDLE_ID and "website" or (WEB_APP_BUNDLE_IDS[bundleID] and "webApp" or "osApp"),
     appName = app and app:name() or "Unknown App",
     bundleID = bundleID,
     appPath = app and app:path() or "",
@@ -754,6 +799,77 @@ local function liveElementPayload(element, point)
     windowFrame = axFrame(window),
     capturedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
   }
+end
+
+local function replayIntentForPayload(payload, captureButton)
+  if captureButton == "right" then
+    return "openContextMenu"
+  end
+
+  local surface = payload.surface or ""
+  local role = payload.role or ""
+  local tag = payload.tag or ""
+
+  if surface == "website" then
+    if tag == "input" or tag == "textarea" or role == "AXTextField" or role == "AXTextArea" or role == "AXSearchField" then
+      return "focus"
+    end
+    return "domClick"
+  end
+
+  if role == "AXTextField" or role == "AXTextArea" or role == "AXSearchField" then
+    return "focus"
+  end
+
+  if surface == "webApp" and (role == "AXButton" or role == "AXPopUpButton") then
+    return "physicalClick"
+  end
+
+  if role == "AXButton" or role == "AXPopUpButton" or role == "AXMenuItem" then
+    return "press"
+  end
+
+  return nil
+end
+
+function M.captureHoveredElement()
+  local point = hs.mouse.absolutePosition()
+  local element = hs.axuielement.systemElementAtPosition(point)
+  if not element then
+    return hs.json.encode({ status = "error", message = "No control under the pointer" })
+  end
+  -- Some controls expose their label as the hit-test result. Keep the actionable parent.
+  for _ = 1, 5 do
+    local role = axAttribute(element, "AXRole")
+    if role == "AXButton" or role == "AXPopUpButton" or role == "AXMenuItem"
+        or role == "AXTextField" or role == "AXTextArea" or role == "AXSearchField" then break end
+    local parent = axRawAttribute(element, "AXParent")
+    if not parent then break end
+    element = parent
+  end
+  local payload = liveElementPayload(element, point)
+  local front = hs.application.frontmostApplication()
+  local targetID = front and front:bundleID() or ""
+  if targetID == "com.singleton23.XSpoon" then targetID = liveInspectorBundleID or "" end
+  if not payload or payload.bundleID ~= targetID or targetID == "" then
+    return hs.json.encode({ status = "error", message = "Point at a control in the target app" })
+  end
+  payload.replayIntent = replayIntentForPayload(payload, "left")
+  if not payload.replayIntent then
+    return hs.json.encode({ status = "error", message = "Capture a button, menu option, or text field" })
+  end
+  payload.kind = "hammerspoon-local-element"
+  payload.captureID = hs.host.uuid()
+  payload.captureButton = "left"
+  payload.axIdentifier = axAttribute(element, "AXIdentifier")
+  resolvedLocalTargets[localActionKey({ appBundleID = payload.bundleID, axRole = payload.role,
+    axTitle = payload.axTitle, axDescription = payload.axDescription, axIdentifier = payload.axIdentifier })] = element
+  local written, err = writeJSON(LOCAL_LATEST_ELEMENT_PATH, payload)
+  if not written then return hs.json.encode({ status = "error", message = tostring(err) }) end
+  hs.pasteboard.setContents(hs.json.encode(payload, true))
+  M.stopLiveInspector()
+  hs.distributednotifications.post("com.singleton23.XSpoon.captureUpdated", nil, { source = "accessibility", captureID = payload.captureID })
+  return hs.json.encode({ status = "captured-local-element", path = LOCAL_LATEST_ELEMENT_PATH, captureID = payload.captureID })
 end
 
 local function writeLiveElement(payload)
@@ -812,106 +928,53 @@ local function updateLiveInspector()
 end
 
 function M.toggleLiveInspector()
-  local function stopLiveInspector()
-    liveInspectorTimer:stop()
-    liveInspectorTimer = nil
-    if liveInspectorCaptureTap then
-      liveInspectorCaptureTap:stop()
-      liveInspectorCaptureTap = nil
-    end
-    liveInspectorSignature = ""
-  end
-
   if liveInspectorTimer then
-    stopLiveInspector()
-    return hs.json.encode({ status = "live-inspector-stopped" })
+    return M.stopLiveInspector()
   end
-
+  local front = hs.application.frontmostApplication()
+  liveInspectorBundleID = front and front:bundleID() or ""
   liveInspectorSignature = ""
   liveInspectorTimer = hs.timer.doEvery(0.12, updateLiveInspector)
+  local pendingEnter
   liveInspectorCaptureTap = hs.eventtap.new({
-    hs.eventtap.event.types.leftMouseDown,
-    hs.eventtap.event.types.rightMouseDown,
     hs.eventtap.event.types.keyDown,
+    hs.eventtap.event.types.keyUp,
   }, function(event)
-    if event:getType() == hs.eventtap.event.types.keyDown then
-      if event:getKeyCode() == hs.keycodes.map.escape then
-        stopLiveInspector()
-        hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
-        return true
-      end
-      return false
-    end
-
-    if event:getType() == hs.eventtap.event.types.rightMouseDown then
-      updateLiveInspector()
-      local target = localContextTarget()
-      if not target then
-        notify("No menu target")
-        return true
-      end
-
-      local items = {}
-      local showOk = pcall(function() target:performAction("AXShowMenu") end)
-      if showOk then
-        hs.timer.usleep(200000)
-        local children = target:attributeValue("AXChildren") or {}
-        for _, child in ipairs(children) do
-          local childRole = axAttribute(child, "AXRole")
-          if childRole == "AXMenu" then
-            local menuChildren = child:attributeValue("AXChildren") or {}
-            for _, item in ipairs(menuChildren) do
-              if axAttribute(item, "AXRole") == "AXMenuItem" then
-                table.insert(items, {
-                  role = "AXMenuItem",
-                  title = axAttribute(item, "AXTitle") or "",
-                  value = axAttribute(item, "AXValue"),
-                  description = axAttribute(item, "AXDescription"),
-                  enabled = item:attributeValue("AXEnabled") ~= false,
-                })
-              end
-            end
-            break
-          end
-        end
-        pcall(function() target:performAction("AXCancel") end)
-      end
-
-      if #items > 0 then
-        local encoded = hs.json.encode(items, true)
-        local menuFile = io.open(MENU_ITEMS_PATH, "w")
-        if menuFile then
-          menuFile:write(encoded)
-          menuFile:close()
-        end
-        notify(tostring(#items) .. " menu items")
-        hs.distributednotifications.post("com.singleton23.XSpoon.menuItemsRead")
-      else
-        notify("No menu items found")
-      end
+    local code, kind = event:getKeyCode(), event:getType()
+    if kind == hs.eventtap.event.types.keyDown and code == hs.keycodes.map.escape then
+      M.stopLiveInspector()
       return true
     end
-
-    updateLiveInspector()
-    local title = "element"
-    local file = io.open(LIVE_LATEST_ELEMENT_PATH, "r")
-    if file then
-      local ok, data = pcall(hs.json.decode, file:read("*a"))
-      file:close()
-      if ok and data then
-        title = data.axTitle or data.title or data.axDescription or "element"
+    if code == hs.keycodes.map["return"] or code == hs.keycodes.map.padenter then
+      if pendingEnter == code then
+        if kind == hs.eventtap.event.types.keyUp then
+          pendingEnter = nil
+          -- Capture after release: a held Enter must not submit the setup sheet.
+          local ok, result = pcall(M.captureHoveredElement)
+          result = ok and hs.json.decode(result) or nil
+          if not result or result.status == "error" then
+            hs.distributednotifications.post("com.singleton23.XSpoon.captureFailed", nil,
+              { message = result and result.message or "Capture failed" })
+          end
+        end
+        return true
+      end
+      local flags = event:getFlags()
+      if kind == hs.eventtap.event.types.keyDown
+        and not (flags.cmd or flags.alt or flags.ctrl or flags.shift or flags.fn) then
+        pendingEnter = code
+        return true
       end
     end
-    notify("Captured " .. tostring(title):sub(1, 30))
-    stopLiveInspector()
-    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
-    return true
+    return false
   end)
   liveInspectorCaptureTap:start()
+  publishInspectionState()
   updateLiveInspector()
   return hs.json.encode({
     status = "live-inspector-started",
-    instruction = "click-to-capture",
+    active = true,
+    instruction = "enter-to-capture-escape-to-cancel",
     path = LIVE_LATEST_ELEMENT_PATH,
   })
 end
@@ -979,7 +1042,7 @@ function M.captureCurrentTarget()
     return M.pickSelector({ autoClick = true, delay = 0.6 })
   end
 
-  return M.captureFocusedLocalElement()
+  return M.captureHoveredElement()
 end
 
 function M.openFocusedLocalContextMenu()
@@ -1111,6 +1174,9 @@ local function findLocalActionElement(action)
   end
 
   local function matches(element)
+    if action.axIdentifier and action.axIdentifier ~= "" and axAttribute(element, "AXIdentifier") ~= action.axIdentifier then
+      return false
+    end
     if action.axRole and action.axRole ~= "" and axAttribute(element, "AXRole") ~= action.axRole then
       return false
     end
@@ -1130,8 +1196,25 @@ local function findLocalActionElement(action)
     return true
   end
 
+  local key = localActionKey(action)
+  local function verified(element)
+    if not element or not element:isValid() or not matches(element) then return nil end
+    local frame = axFrame(element)
+    if not frame or frame.w <= 0 or frame.h <= 0 then return nil end
+    local hit = hs.axuielement.systemElementAtPosition({ x = frame.x + frame.w / 2, y = frame.y + frame.h / 2 })
+    local app = hs.application.frontmostApplication()
+    if hit and app and hit:pid() == app:pid() and matches(hit) then
+      resolvedLocalTargets[key] = hit
+      return hit
+    end
+  end
+
+  local cached = verified(resolvedLocalTargets[key])
+  if cached then return cached, nil end
+
   local focused = hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement")
   if focused and matches(focused) then
+    resolvedLocalTargets[key] = focused
     return focused, nil
   end
 
@@ -1150,11 +1233,27 @@ local function findLocalActionElement(action)
       y = currentWindowFrame.y + relativeY,
     })
     if pointElement and matches(pointElement) then
+      resolvedLocalTargets[key] = pointElement
       return pointElement, nil
     end
   end
 
-  return walkAx(root, matches, 8), nil
+  -- Older captures have no windowFrame. A hit at their old point is usable only
+  -- when the app and saved AX identity still match; never click a bare coordinate.
+  if type(savedFrame) == "table" and savedFrame.x and savedFrame.y then
+    local pointElement = hs.axuielement.systemElementAtPosition({
+      x = savedFrame.x + ((savedFrame.w or 1) / 2),
+      y = savedFrame.y + ((savedFrame.h or 1) / 2),
+    })
+    if pointElement and pointElement:pid() == hs.application.frontmostApplication():pid() and matches(pointElement) then
+      resolvedLocalTargets[key] = pointElement
+      return pointElement, nil
+    end
+  end
+
+  local found = walkAx(root, matches, 24)
+  if found then resolvedLocalTargets[key] = found end
+  return found, nil
 end
 
 local function clickLocalActionFrame(action)
@@ -1179,7 +1278,40 @@ local function clickLocalActionFrame(action)
   })
 end
 
+local function clickLocalElement(element, action)
+  local frame = axFrame(element)
+  if type(frame) ~= "table" or not frame.x or not frame.y then
+    return clickLocalActionFrame(action) or hs.json.encode({ status = "missing-local-frame" })
+  end
+
+  hs.eventtap.leftClick({
+    x = frame.x + ((frame.w or 1) / 2),
+    y = frame.y + ((frame.h or 1) / 2),
+  })
+
+  return hs.json.encode({
+    status = "clicked-local-element",
+    replayIntent = "physicalClick",
+    role = axAttribute(element, "AXRole"),
+    title = axAttribute(element, "AXTitle"),
+    value = axAttribute(element, "AXValue"),
+    description = axAttribute(element, "AXDescription"),
+    appName = action.appName or "",
+    bundleID = action.appBundleID or "",
+    x = frame.x,
+    y = frame.y,
+    w = frame.w,
+    h = frame.h,
+  })
+end
+
 local function localReplayAction(action)
+  if action.replayIntent == "focus" then
+    return "AXFocus"
+  end
+  if action.replayIntent == "press" then
+    return "AXPress"
+  end
   if action.axAction and action.axAction ~= "" then
     return action.axAction
   end
@@ -1192,15 +1324,6 @@ end
 local function pressLocalAction(action)
   local element, errorMessage = findLocalActionElement(action)
   if not element then
-    local hasMatcher = (action.axRole and action.axRole ~= "")
-      or (action.axTitle and action.axTitle ~= "")
-      or (action.axValue and action.axValue ~= "")
-      or (action.axDescription and action.axDescription ~= "")
-    local frameResult = not hasMatcher and clickLocalActionFrame(action)
-    if frameResult then
-      return frameResult
-    end
-
     return hs.json.encode({ status = "missing-local-element", message = errorMessage or "No matching AX element" })
   end
 
@@ -1232,6 +1355,10 @@ local function pressLocalAction(action)
       role = axAttribute(element, "AXRole"),
       title = axAttribute(element, "AXTitle"),
     })
+  end
+
+  if action.replayIntent == "physicalClick" or (action.axRole == "AXButton" and action.replayIntent == "press") then
+    return clickLocalElement(element, action)
   end
 
   local replayAction = localReplayAction(action)
@@ -1270,10 +1397,62 @@ local function pressLocalAction(action)
   })
 end
 
-local function readElementActions()
+local function readElementActions(registryPath)
+  local path = registryPath or ACTION_REGISTRY_PATH
+  local registryFile = io.open(path, "r")
+  if registryFile then
+    local raw = registryFile:read("*a")
+    registryFile:close()
+    local ok, registry = pcall(hs.json.decode, raw)
+    local function invalid(message)
+      hs.printf("XSpoon registry unavailable: %s", message)
+      return {}, { source = "canonical", path = path, error = message }
+    end
+    if not ok or type(registry) ~= "table" or registry.schemaVersion ~= 1 or type(registry.apps) ~= "table" then
+      return invalid("Invalid or unsupported registry JSON")
+    end
+    local actions, parents = {}, {}
+    local skipped = 0
+    for _, app in ipairs(registry.apps) do
+      if type(app) ~= "table" or type(app.bundleIdentifier) ~= "string" or parents[app.bundleIdentifier] or type(app.actions) ~= "table" then
+        return invalid("Invalid or duplicate app parent")
+      end
+      parents[app.bundleIdentifier] = true
+      local ids = {}
+      for _, record in ipairs(app.actions) do
+        if type(record) ~= "table" or type(record.review) ~= "table" then return invalid("Invalid saved action record or review") end
+        local payload = record.payload
+        if payload then
+          if type(payload) ~= "table" then return invalid("Invalid capture payload") end
+          if record.legacyShortcut or (payload.appBundleID or "") ~= app.bundleIdentifier then return invalid("Action does not match its parent app") end
+          if record.origin ~= "capture" then return invalid("Capture origin is invalid") end
+          if type(payload.id) ~= "string" or payload.id == "" or ids[payload.id] then return invalid("Invalid or duplicate action ID") end
+          ids[payload.id] = true
+          local state = record.review and record.review.state
+          if state == "verified" or state == "unverified" then
+            table.insert(actions, payload)
+          elseif state == "blocked" or state == "needsRecapture" then
+            skipped = skipped + 1
+          else
+            return invalid("Capture has no valid review state")
+          end
+        elseif record.legacyShortcut and record.origin == "legacyCommand" and record.review and record.review.state == "inherited" then
+          skipped = skipped + 1
+        else
+          return invalid("Missing saved action record")
+        end
+      end
+    end
+    return actions, { source = "canonical", path = path, runnable = #actions, skipped = skipped }
+  elseif registryPath then
+    return {}, { source = "canonical", path = path, error = "Registry file missing" }
+  end
+
+  -- Read-only compatibility before XSpoon performs the one-time migration.
+  -- Once a canonical file exists, invalid data never falls back to this file.
   local file = io.open(ELEMENT_ACTIONS_PATH, "r")
   if not file then
-    return {}
+    return {}, { source = "legacy", path = ELEMENT_ACTIONS_PATH }
   end
 
   local value = file:read("*a")
@@ -1287,11 +1466,16 @@ local function readElementActions()
     return {}
   end
 
-  return decoded
+  return decoded, { source = "legacy", path = ELEMENT_ACTIONS_PATH }
 end
 
-function M.readElementActions()
-  return readElementActions()
+function M.readElementActions(registryPath)
+  return readElementActions(registryPath)
+end
+
+function M.registryStatus()
+  local _, status = readElementActions()
+  return status
 end
 
 function M.actionsForApp(bundleID)
@@ -2154,15 +2338,6 @@ for _, script in ipairs(catalog) do
   byId[script.id] = script
 end
 
-local function elementActionById(id)
-  for _, action in ipairs(readElementActions()) do
-    if action.id == id then
-      return action
-    end
-  end
-  return nil
-end
-
 local function groupForScriptId(id)
   if id:match("^job%-form%.") then
     return "Job Filling"
@@ -2191,18 +2366,6 @@ function M.list()
     })
   end
 
-  for _, action in ipairs(readElementActions()) do
-    local isLocal = action.variant == "local"
-    table.insert(items, {
-      id = action.id,
-      name = action.name,
-      description = action.template == "two-click" and (isLocal and "Saved local app action, two presses" or "Saved browser element action, two clicks")
-        or (isLocal and "Saved local app action" or "Saved browser element action"),
-      keywords = isLocal and { "local", "app", "element", "saved" } or { "chrome", "element", "saved" },
-      group = isLocal and "Local Actions" or "Saved Browser Actions",
-    })
-  end
-
   return hs.json.encode(items)
 end
 
@@ -2210,11 +2373,6 @@ function M.execute(id)
   local script = byId[id]
 
   if not script then
-    local action = elementActionById(id)
-    if action then
-      return runElementAction(action)
-    end
-
     return hs.json.encode({ error = "Unknown script id: " .. tostring(id) })
   end
 
@@ -2240,43 +2398,12 @@ function M.bindHotkeys()
   end)
   hs.hotkey.bind({ "ctrl", "alt" }, "i", function()
     M.toggleLiveInspector()
-    hs.distributednotifications.post("com.singleton23.XSpoon.inspectCurrentApp")
   end)
-  hs.hotkey.bind({ "ctrl", "alt" }, "e", function()
-    M.copyLiveElementToClipboard()
-    hs.distributednotifications.post("com.singleton23.XSpoon.captureCurrentElement")
-  end)
-
+  publishInspectionState()
 end
 
 function M.bindContextMenuHotkey()
   hs.hotkey.bind({ "ctrl", "alt" }, "m", M.openFocusedLocalContextMenu)
-end
-
-function M.bindElementActionHotkeys()
-  return 0
-end
-
-function M.reloadElementActionHotkeys(actionID)
-  if actionID and actionID ~= "" then
-    return hs.json.encode({
-      actionID = actionID,
-      status = "capture-saved-module-required",
-      saved = elementActionById(actionID) ~= nil,
-      ready = false,
-    })
-  end
-  return hs.json.encode({ status = "capture-catalog-only", count = 0 })
-end
-
-function M.savedElementHotkeyCount()
-  local count = 0
-  for _, action in ipairs(readElementActions()) do
-    if action.hotkey and action.hotkey.key and action.hotkey.modifiers then
-      count = count + 1
-    end
-  end
-  return count
 end
 
 return M

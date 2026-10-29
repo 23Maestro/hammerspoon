@@ -24,11 +24,25 @@ It is designed to become a small paid Mac utility for people who live across a h
 
 The boundary matters: XSpoon should make capture and shortcut setup feel native; Hammerspoon should remain the engine that touches apps.
 
+## Saved Actions
+
+`~/.hammerspoon/xspoon_registry.json` is the canonical per-app registry. XSpoon
+projects its My Apps rows from that document and writes saves/deletions there;
+Hammerspoon reads the same captured payloads for its app-scoped bindings. The
+legacy action file and UserDefaults catalog are backed up during one-time import
+and are no longer written as parallel stores.
+
+Review labels distinguish Verified, Unverified, Blocked, Needs Recapture, and
+Legacy Script records. Inherited script commands remain managed by their existing
+implementations; blocked captures are visible but not bound. See the
+[migration receipt](../../docs/2026-10-29-per-app-registry.md).
+
 ## Current Global Shortcuts
 
 - `Control-Option-O`: toggle XSpoon menu.
 - `Control-Option-I`: inspect current app.
-- `Control-Option-E`: capture element.
+- `Enter` while inspecting: capture the control under the pointer on key release.
+- `Escape`: cancel inspection. `Right Command-E` is available for saved app shortcuts.
 - `Control-Option-0`: open inspector.
 
 ## Build And Run
@@ -39,6 +53,20 @@ cd apps/XSpoon
 ```
 
 The build script signs and installs `/Applications/XSpoon.app`. Keep this path stable so macOS permissions and user testing stay predictable.
+
+The app build does not install or rewrite Hammerspoon's user configuration. The
+live setup links `assets/hammerspoon/scripts` into `~/.hammerspoon/scripts` and
+`assets/hammerspoon/Spoons/XSpoon.spoon` into `~/.hammerspoon/Spoons/XSpoon.spoon`.
+After the existing app modules and global routes are registered, `init.lua` must
+start the saved-action runtime:
+
+```lua
+hs.loadSpoon("XSpoon")
+xspoonRuntime = spoon.XSpoon:start()
+```
+
+Keep that startup in one place. The user-owned `init.lua` is outside this source
+repository; do not overwrite it with a generated configuration.
 
 ## Repository Contract
 

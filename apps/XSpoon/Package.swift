@@ -11,8 +11,9 @@ let package = Package(
         .executableTarget(
             name: "XSpoonMenu",
             path: ".",
-            exclude: ["Package.swift", "README.md", "WAYFINDER.md", "2026-07-13_XSPOON_LIVE_OVERLAY_FINDINGS.md", "script", ".codex", "dist"],
+            exclude: ["Package.swift", "README.md", "WAYFINDER.md", "2026-07-13_XSPOON_LIVE_OVERLAY_FINDINGS.md", "script", "dist", "Tests"],
             resources: [.process("Resources")]
-        )
+        ),
+        .testTarget(name: "XSpoonTests", dependencies: ["XSpoonMenu"], path: "Tests")
     ]
 )

@@ -62,7 +62,6 @@ struct ContentView: View {
 struct MyAppsSettingsView: View {
     @ObservedObject var store: InspectorStore
     @State private var selectedAppID = MyAppsCatalog.all.first?.id ?? "finder"
-    @State private var showingEditor = false
     @State private var shortcutPendingDeletion: AppShortcut?
     @State private var appPendingDeletion: MyAppDefinition?
 
@@ -118,18 +117,17 @@ struct MyAppsSettingsView: View {
                                 }
                             }
                         }
-                        Button { showingEditor = true } label: {
-                            Label("Add Shortcut", systemImage: "plus")
+                        Button {
+                            store.focus(app)
+                            NotificationCenter.default.post(name: .xspoonBeginInspection, object: nil)
+                        } label: {
+                            Label("Inspect New Shortcut", systemImage: "plus")
                         }
                         .buttonStyle(.borderedProminent)
                     }
                     .padding(24)
                 }
             }
-        }
-        .sheet(isPresented: $showingEditor) {
-            ShortcutEditorView(app: selectedApp, store: store)
-                .frame(width: 460, height: 430)
         }
         .alert("Delete shortcut?", isPresented: Binding(
             get: { shortcutPendingDeletion != nil },
@@ -159,7 +157,7 @@ struct MyAppsSettingsView: View {
                 appPendingDeletion = nil
             }
         } message: { app in
-            Text("Remove \(app.name) and all of its saved shortcuts?")
+            Text("Remove \(app.name) and its saved captures from XSpoon? Inherited script commands are not changed.")
         }
     }
 }
@@ -171,6 +169,15 @@ struct ShortcutCard: View {
     private var shortcutLabel: String {
         modifier.hammerspoonModifiers.isEmpty ? shortcut.key : "+ \(shortcut.key)"
     }
+    private var review: ActionReviewState { ActionReviewState(rawValue: shortcut.reviewState ?? "") ?? .unverified }
+    private var reviewColor: Color {
+        switch review {
+        case .verified: .green
+        case .blocked: .red
+        case .needsRecapture, .unverified: .orange
+        case .inherited: .secondary
+        }
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -180,91 +187,30 @@ struct ShortcutCard: View {
                 .padding(.vertical, 5)
                 .background(Color.accentColor.opacity(0.18), in: Capsule())
             Text(shortcutLabel).font(.headline.monospaced())
-            Text(shortcut.action).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(shortcut.action)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(review.label)
+                    .font(.caption)
+                    .foregroundStyle(reviewColor)
+                    .help(shortcut.reviewReason ?? "Not verified")
+                if review == .blocked || review == .needsRecapture {
+                    Text(shortcut.reviewReason ?? "Review this capture")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Spacer()
             Button(action: onDelete) {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Delete shortcut")
+            .disabled(shortcut.origin == "legacyCommand")
+            .help(shortcut.origin == "legacyCommand" ? "Managed by an existing Hammerspoon script" : "Delete shortcut")
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-struct ShortcutEditorView: View {
-    let app: MyAppDefinition?
-    @ObservedObject var store: InspectorStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var action = "Open Context Menu"
-    @State private var key = ""
-    @State private var modifierID = ModifierCatalog.all[0].id
-    @State private var readingKey = false
-    @State private var monitor: Any?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Shortcut").font(.title2.bold())
-            Text(app?.name ?? "App").foregroundStyle(.secondary)
-            TextField("Action", text: $action)
-                .textFieldStyle(.roundedBorder)
-            Text("Modifier")
-            ScrollView(.horizontal) {
-                HStack {
-                    ForEach(ModifierCatalog.all) { modifier in
-                        Button {
-                            modifierID = modifier.id
-                        } label: {
-                            Text(modifier.badge)
-                                .font(.caption.bold())
-                                .padding(10)
-                                .background(modifierID == modifier.id ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            HStack {
-                Text(key.isEmpty ? "Press one key" : "Key: \(key)")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(readingKey ? "Listening..." : "Read Key") { toggleKeyReader() }
-            }
-            Spacer()
-            HStack {
-                Button("Cancel") { dismiss() }
-                Spacer()
-                Button("Save") {
-                    guard let app else { return }
-                    store.updateShortcut(AppShortcut(id: "\(app.id)-\(UUID().uuidString)", action: action, key: key.uppercased(), modifierID: modifierID), for: app)
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(key.isEmpty)
-            }
-        }
-        .padding(24)
-        .onDisappear { stopKeyReader() }
-    }
-
-    private func toggleKeyReader() {
-        readingKey ? stopKeyReader() : startKeyReader()
-    }
-
-    private func startKeyReader() {
-        readingKey = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 { stopKeyReader(); return nil }
-            key = event.charactersIgnoringModifiers?.uppercased() ?? ""
-            stopKeyReader()
-            return nil
-        }
-    }
-
-    private func stopKeyReader() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        readingKey = false
     }
 }
 
@@ -314,6 +260,9 @@ struct CreateElementSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                Text("Replay: \(pending.snapshot.effectiveReplayIntent)")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
                 if pending.kind == .menuOption && store.menuItems.isEmpty {
                     Text("Right-click the element to read its menu")
                         .font(.caption.bold())
@@ -352,6 +301,7 @@ struct CreateElementSheet: View {
                     Text(app.name).tag(app.id)
                 }
             }
+            .disabled(true)
 
             TextField("Action", text: $action)
                 .textFieldStyle(.roundedBorder)
@@ -387,6 +337,14 @@ struct CreateElementSheet: View {
                 Button(readingKey ? "Listening..." : "Read Key") { toggleKeyReader() }
             }
 
+            if store.status.hasPrefix("Could not save") {
+                Text(store.status)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("capture-save-error")
+            }
+
             Spacer()
 
             HStack {
@@ -397,14 +355,15 @@ struct CreateElementSheet: View {
                 Spacer()
                 Button("Save Shortcut") {
                     let shortcut = AppShortcut(
-                        id: "\(appID)-\(UUID().uuidString)",
+                        id: "\(appID)-\(pending.id.uuidString)",
                         action: action.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? pending.snapshot.displayTitle : action,
                         key: key.uppercased(),
                         modifierID: modifierID
                     )
-                    store.saveElementShortcut(shortcut, forAppID: appID, snapshot: pending.snapshot, menuItemTitle: selectedMenuItem)
-                    store.pendingCapture = nil
-                    dismiss()
+                    if store.saveElementShortcut(shortcut, forAppID: appID, snapshot: pending.snapshot, menuItemTitle: selectedMenuItem) {
+                        store.pendingCapture = nil
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canSave)
@@ -416,7 +375,7 @@ struct CreateElementSheet: View {
 
     private var elementSummary: String {
         let app = store.app(id: appID)?.name ?? pending.snapshot.appDisplayName
-        return "\(pending.kind.rawValue) in \(app)"
+        return "\(pending.kind.rawValue) in \(app) · \(pending.snapshot.effectiveSurface) · \(pending.snapshot.effectiveCaptureButton)"
     }
 
     private static func actionVerb(for kind: AdapterKind) -> String {
@@ -454,7 +413,8 @@ struct XSpoonSettingsView: View {
             Section("Global shortcuts") {
                 LabeledContent("Toggle menu", value: "⌃⌥O")
                 LabeledContent("Inspect current app", value: "⌃⌥I")
-                LabeledContent("Capture item", value: "⌃⌥E")
+                LabeledContent("Capture while inspecting", value: "Enter")
+                LabeledContent("Cancel inspection", value: "Escape")
                 LabeledContent("Open inspector", value: "⌃⌥0")
             }
             Section("Hammerspoon") {

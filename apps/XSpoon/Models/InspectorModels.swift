@@ -24,8 +24,13 @@ struct AppContext: Equatable {
 }
 
 struct ElementSnapshot: Codable, Equatable {
+    var captureID: String?
+    var capturedAt: String?
     var kind: String?
     var captureMethod: String?
+    var surface: String?
+    var captureButton: String?
+    var replayIntent: String?
     var selector: String?
     var url: String?
     var title: String?
@@ -44,6 +49,7 @@ struct ElementSnapshot: Codable, Equatable {
     var axDescription: String?
     var axPlaceholder: String?
     var axHelp: String?
+    var axIdentifier: String?
     var actions: [String]?
     var frame: SnapshotRect?
     var windowFrame: SnapshotRect?
@@ -70,6 +76,49 @@ struct ElementSnapshot: Codable, Equatable {
             return .dom
         }
         return .accessibility
+    }
+
+    var effectiveSurface: String {
+        if let surface, !surface.isEmpty {
+            return surface
+        }
+        if kind == "hammerspoon-browser-element" || selector?.isEmpty == false {
+            return "website"
+        }
+        switch bundleID {
+        case "com.openai.codex", "tw.ogdesign.eagle", "com.eagle.cool", "notion.id", "com.canva.CanvaDesktop":
+            return "webApp"
+        case "com.google.Chrome":
+            return "website"
+        default:
+            return "osApp"
+        }
+    }
+
+    var effectiveCaptureButton: String {
+        captureButton?.isEmpty == false ? captureButton! : "left"
+    }
+
+    var effectiveReplayIntent: String {
+        if let replayIntent, !replayIntent.isEmpty {
+            return replayIntent
+        }
+        if effectiveCaptureButton == "right" {
+            return "openContextMenu"
+        }
+        if AdapterKind.detect(self) == .textField {
+            return "focus"
+        }
+        if effectiveSurface == "website" {
+            return AdapterKind.detect(self) == .textField ? "focus" : "domClick"
+        }
+        if effectiveSurface == "webApp", AdapterKind.detect(self) == .button {
+            return "physicalClick"
+        }
+        if actions?.contains("AXPress") == true {
+            return "press"
+        }
+        return "unresolved"
     }
 
     var xRole: String {
@@ -153,6 +202,9 @@ struct AppShortcut: Identifiable, Codable, Equatable {
     var action: String
     var key: String
     var modifierID: String
+    var reviewState: String?
+    var reviewReason: String?
+    var origin: String?
 }
 
 struct PendingElementCapture: Identifiable, Equatable {
@@ -174,19 +226,47 @@ struct ModifierPreset: Identifiable, Hashable {
 enum ModifierCatalog {
     static let singleKey = ModifierPreset(id: "single-key", label: "Single key", badge: "KEY", color: "gray", hammerspoonModifiers: [])
 
-    static let all: [ModifierPreset] = [
-        ModifierPreset(id: "right-command", label: "Right Command", badge: "R CMD", color: "red", hammerspoonModifiers: ["ctrl", "alt"]),
-        ModifierPreset(id: "right-shift", label: "Right Shift", badge: "R SHFT", color: "blue", hammerspoonModifiers: ["alt", "cmd"]),
-        ModifierPreset(id: "tilde", label: "Tilde", badge: "TILDE", color: "orange", hammerspoonModifiers: ["ctrl", "alt", "cmd"]),
-        ModifierPreset(id: "right-command-right-control", label: "Right Command", badge: "R CMD/R CTRL", color: "purple", hammerspoonModifiers: ["ctrl", "cmd"]),
-        ModifierPreset(id: "right-bracket", label: "Right Bracket", badge: "R BRKT", color: "green", hammerspoonModifiers: ["alt", "shift", "cmd"]),
-        ModifierPreset(id: "left-bracket", label: "Left Bracket", badge: "L BRKT", color: "pink", hammerspoonModifiers: ["alt", "shift", "ctrl"]),
-        ModifierPreset(id: "right-control-option", label: "Right Control / Option", badge: "R CTRL/OPT", color: "cyan", hammerspoonModifiers: ["ctrl", "cmd"])
-    ]
+    private struct LedgerEntry: Decodable {
+        var id: String
+        var label: String
+        var hammerspoonModifiers: [String]
+        var physicalInput: PhysicalInput
+        struct PhysicalInput: Decodable { var modifiers: InputModifiers? }
+        struct InputModifiers: Decodable { var mandatory: [String]? }
+    }
+
+    static let all: [ModifierPreset] = {
+        guard let url = Bundle.module.url(forResource: "ModifierLedger", withExtension: "jsonl"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let decoder = JSONDecoder()
+        let presentation: [String: (String, String, String)] = [
+            "right_command": ("right-command", "R CMD", "red"),
+            "right_shift": ("right-shift", "R SHFT", "blue"),
+            "right_option": ("right-option", "R OPT", "cyan"),
+            "grave_accent_and_tilde": ("tilde", "TILDE", "orange"),
+            "close_bracket": ("right-bracket", "R BRKT", "green"),
+            "open_bracket": ("left-bracket", "L BRKT", "pink"),
+            "caps_lock": ("hyper", "HYPER", "purple"),
+            "tab": ("tab", "TAB", "blue"),
+            "backslash": ("backslash", "BACKSLASH", "orange"),
+            "left_control": ("left-control", "L CTRL", "cyan")
+        ]
+        return text.split(separator: "\n").compactMap { line in
+            guard let entry = try? decoder.decode(LedgerEntry.self, from: Data(line.utf8)),
+                  entry.physicalInput.modifiers?.mandatory?.isEmpty != false,
+                  let (id, badge, color) = presentation[entry.id] else { return nil }
+            return ModifierPreset(id: id, label: entry.label, badge: badge, color: color, hammerspoonModifiers: entry.hammerspoonModifiers)
+        }.sorted { lhs, rhs in
+            let order = ["right-command", "right-shift", "tab", "tilde", "right-bracket", "left-bracket", "right-option", "hyper", "backslash", "left-control"]
+            return (order.firstIndex(of: lhs.id) ?? 99) < (order.firstIndex(of: rhs.id) ?? 99)
+        }
+    }()
 
     static func preset(_ id: String) -> ModifierPreset {
         if id == singleKey.id { return singleKey }
-        return all.first(where: { $0.id == id }) ?? all[0]
+        let resolvedID = id == "right-control-option" ? "right-option" : id
+        return all.first(where: { $0.id == resolvedID })
+            ?? ModifierPreset(id: id, label: "Unknown modifier", badge: "?", color: "gray", hammerspoonModifiers: [])
     }
 }
 

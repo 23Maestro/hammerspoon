@@ -12,6 +12,14 @@ This repository is the canonical home for both sides of the system:
 
 This is not extension-only maintenance. The Raycast extension still lives at the repo root, but XSpoon app changes are first-class repository changes and should be reviewed, committed, and pushed with the matching Hammerspoon runtime work.
 
+## Surface Boundaries
+
+- **Raycast extension (`src/`, `package.json`)** provides general Hammerspoon commands. Its legacy Create Element command is deprecated; its separate removal is not part of this XSpoon commit. Do not use it to configure the canonical XSpoon registry.
+- **XSpoon app (`apps/XSpoon/`)** owns current capture and shortcut setup: inspector, live-capture review, app catalog, and the canonical registry save/delete workflow.
+- **Hammerspoon runtime (`assets/hammerspoon/`, installed at `~/.hammerspoon/`)** performs Accessibility/DOM work and dispatches actions. It reads saved action data at execution time; it is not a second configuration UI.
+
+The persisted action data lives in `~/.hammerspoon/xspoon_registry.json`, grouped by app. `XSpoon.spoon` reads eligible captured records and enables only the frontmost app's saved-action modal. The old `browser_element_actions.json` is retained for migration, not written as a parallel store. Hand-authored modules under `assets/hammerspoon/scripts/apps/` remain separate until individually migrated and verified.
+
 ## Product Direction
 
 XSpoon is becoming a small, reliable Mac utility for personal app automation.
@@ -32,7 +40,7 @@ Global XSpoon shortcuts are handled by Hammerspoon:
 
 - `Control-Option-O`: toggle the XSpoon menu.
 - `Control-Option-I`: inspect the current app.
-- `Control-Option-E`: capture the current element.
+- `Enter` while inspecting: capture the hovered control on release; `Escape`: cancel.
 - `Control-Option-0`: open the inspector window.
 
 Saved app actions use the same per-app dispatcher pattern as the existing working shortcuts. For example, a physical right-side modifier can be normalized by Karabiner into `ctrl+alt`, then Hammerspoon receives the real `Control-Option-<key>` combo and dispatches the action for the frontmost app.
@@ -64,7 +72,8 @@ The main runtime pieces are:
 
 - `assets/hammerspoon/scripts/browser_automations.lua`: global hotkeys, live inspector/capture path, Chrome helpers, local Accessibility primitives, and Raycast script entrypoints.
 - `assets/hammerspoon/scripts/automation_core.lua`: semantic per-app dispatcher.
-- `assets/hammerspoon/scripts/apps/`: app-specific Lua modules and saved capture actions.
+- `assets/hammerspoon/scripts/apps/`: hand-authored app-specific Lua modules.
+- `assets/hammerspoon/Spoons/XSpoon.spoon/`: saved-action modal runtime and application watcher.
 - `apps/XSpoon/Services/HammerspoonClient.swift`: Swift bridge for reading/writing Hammerspoon artifacts.
 - `apps/XSpoon/Stores/InspectorStore.swift`: app state, capture flow, shortcut persistence, and clipboard write path.
 
@@ -86,4 +95,4 @@ If the change touches capture, shortcuts, saved actions, or Hammerspoon notifica
 - the XSpoon Swift files under `apps/XSpoon`
 - the Hammerspoon Lua files under `assets/hammerspoon`
 
-Raycast extension-only pushes are only appropriate for changes limited to the Raycast commands, extension metadata, or TypeScript extension code.
+Raycast extension-only pushes are only appropriate for changes limited to the Raycast commands, extension metadata, or TypeScript extension code. The extension must not regain a parallel element-action creation flow.

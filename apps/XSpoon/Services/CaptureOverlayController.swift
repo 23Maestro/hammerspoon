@@ -22,6 +22,7 @@ final class CaptureOverlayController {
         if autoDismiss {
             dismissTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(2.2))
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self?.panel?.orderOut(nil)
                 }

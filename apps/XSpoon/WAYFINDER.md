@@ -16,7 +16,7 @@ Make XSpoon a menu-bar-led control surface for Hammerspoon shortcuts, app focus,
 
 - `Control-Option-O`: toggle XSpoon menu.
 - `Control-Option-I`: inspect current app.
-- `Control-Option-E`: capture element.
+- `Enter` while inspecting: capture the control under the pointer on release; `Escape`: cancel.
 - `Control-Option-0`: open the inspector pane.
 - Shortcut editing uses colored modifier cards plus a one-key reader.
 - Right-side modifier labels remain visible even where Hammerspoon receives normalized modifiers.

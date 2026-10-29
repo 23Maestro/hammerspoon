@@ -77,34 +77,4 @@ function M.eventtap(action)
   end
 end
 
-function M.loadGeneratedModules()
-  local registered = {}
-  for _, app in ipairs(apps) do
-    registered[app.id or ""] = true
-  end
-
-  local appsDir = hs.configdir .. "/scripts/apps"
-  local count = 0
-
-  local ok = pcall(function()
-    for file in hs.fs.dir(appsDir) do
-      if file:match("%.lua$") then
-        local modName = "scripts.apps." .. file:gsub("%.lua$", "")
-        local loadOk, mod = pcall(require, modName)
-        if loadOk and type(mod) == "table" and mod.id and not registered[mod.id] then
-          table.insert(apps, mod)
-          registered[mod.id] = true
-          count = count + 1
-        end
-      end
-    end
-  end)
-
-  if not ok then
-    return 0
-  end
-
-  return count
-end
-
 return M

@@ -11,6 +11,8 @@ final class StatusItemController: NSObject {
     private var inspectorWindow: NSWindow?
     private var appearanceObserver: NSKeyValueObservation?
     private var notificationObservers: [NSObjectProtocol] = []
+    private var synchronizationTimer: Timer?
+    private var commandMonitor: Any?
 
     init(store: InspectorStore) {
         self.store = store
@@ -27,6 +29,13 @@ final class StatusItemController: NSObject {
             }
         }
         notificationObservers = [
+            observe(.xspoonBeginInspection) { [weak self] in
+                self?.inspectorWindow?.orderOut(nil)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(300))
+                    self?.store.startInspecting()
+                }
+            },
             observeDistributed(.xspoonToggleMenu) { [weak self] in self?.togglePopover(nil) },
             observe(.xspoonOpenInspector) { [weak self] in self?.toggleInspector() },
             observeDistributed(.xspoonOpenInspector) { [weak self] in self?.toggleInspector() },
@@ -34,10 +43,20 @@ final class StatusItemController: NSObject {
                 self?.handleHammerspoonInspectionToggle()
             },
             observeDistributed(.xspoonLiveElementUpdated) { [weak self] in self?.showLiveElement() },
-            observeDistributed(.xspoonCaptureCurrentElement) { [weak self] in self?.captureCurrentElement() },
             observeDistributed(.xspoonCaptureUpdated) { [weak self] in self?.handleCaptureUpdated() },
             observeDistributed(.xspoonMenuItemsRead) { [weak self] in self?.store.loadMenuItems() }
         ]
+        commandMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 43 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+                self?.openInspector()
+                return nil
+            }
+            return event
+        }
+        // Notifications are hints, not a reliable queue. Reconcile durable state without IPC.
+        synchronizationTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.synchronizeRuntime() }
+        }
     }
 
     private func observe(_ name: Notification.Name, action: @escaping @MainActor () -> Void) -> NSObjectProtocol {
@@ -96,10 +115,12 @@ final class StatusItemController: NSObject {
     }
 
     private func positionInspectorWindow(_ window: NSWindow, size: NSSize) {
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let origin = NSPoint(
-            x: visible.maxX - size.width - 24,
-            y: visible.maxY - size.height - 24
+            x: visible.midX - (size.width / 2),
+            y: visible.midY - (size.height / 2)
         )
         window.setFrame(NSRect(origin: origin, size: size), display: false)
     }
@@ -154,35 +175,35 @@ final class StatusItemController: NSObject {
     }
 
     private func handleCaptureUpdated() {
-        store.refresh()
-        stopInspecting()
-        overlay.show(snapshot: store.snapshot, context: store.context, status: store.status)
+        if let pending = store.receiveCompletedCapture(source: .accessibility)
+            ?? store.receiveCompletedCapture(source: .dom) {
+            presentCapture(pending)
+        }
     }
 
     private func toggleInspectionFromMenu() {
-        guard case .success = hammerspoon.toggleLiveInspector() else {
-            store.status = "Hammerspoon live inspector unavailable"
-            return
-        }
+        popover.performClose(nil)
+        store.toggleInspecting()
         handleHammerspoonInspectionToggle()
     }
 
     private func handleHammerspoonInspectionToggle() {
-        if store.isInspecting {
-            stopInspecting()
-            return
-        }
+        store.synchronizeInspection()
+        if store.isInspecting { showLiveElement() } else { overlay.hide() }
+    }
 
-        store.startInspecting()
-        showLiveElement()
-        showPopover()
+    private func synchronizeRuntime() {
+        let wasInspecting = store.isInspecting
+        store.synchronizeInspection()
+        store.refresh()
+        if store.isInspecting { showLiveElement() }
+        else if wasInspecting { overlay.hide() }
+        handleCaptureUpdated()
     }
 
     private func stopInspecting() {
         overlay.hide()
-        if store.isInspecting {
-            store.stopInspecting()
-        }
+        if hammerspoon.inspectionActive() { store.stopInspecting() }
     }
 
     private func showLiveElement() {
@@ -197,19 +218,11 @@ final class StatusItemController: NSObject {
         overlay.show(snapshot: snapshot, context: context, status: "Inspecting", autoDismiss: false, anchorAtMouse: true)
     }
 
-    private func captureCurrentElement() {
-        let pending = store.createElementFromCurrentTarget()
+    private func presentCapture(_ pending: PendingElementCapture) {
         stopInspecting()
-
-        if let pending {
-            overlay.show(snapshot: pending.snapshot, context: store.context, status: "Ready for shortcut")
-            openInspector()
-            Task { @MainActor in
-                store.pendingCapture = nil
-                await Task.yield()
-                store.pendingCapture = pending
-            }
-        }
+        openInspector()
+        overlay.show(snapshot: pending.snapshot, context: store.context, status: "Ready for shortcut")
+        store.pendingCapture = pending
     }
 }
 

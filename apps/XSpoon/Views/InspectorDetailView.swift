@@ -10,7 +10,6 @@ struct InspectorDetailView: View {
                 contextSection
                 captureSection
                 adapterSection
-                actionSection
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,6 +54,9 @@ struct InspectorDetailView: View {
         InspectorSection(title: "Captured Element", icon: "target") {
             if let snapshot = store.snapshot {
                 KeyValueRow(label: "Type", value: snapshot.xRole)
+                KeyValueRow(label: "Surface", value: snapshot.effectiveSurface)
+                KeyValueRow(label: "Capture", value: snapshot.effectiveCaptureButton)
+                KeyValueRow(label: "Replay", value: snapshot.effectiveReplayIntent)
                 KeyValueRow(label: "Title", value: snapshot.axTitle ?? snapshot.title ?? "Unavailable")
                 KeyValueRow(label: "Value", value: snapshot.axValue ?? snapshot.text ?? "Unavailable")
                 KeyValueRow(label: "Description", value: snapshot.axDescription ?? "Unavailable")
@@ -88,13 +90,6 @@ struct InspectorDetailView: View {
         }
     }
 
-    private var actionSection: some View {
-        InspectorSection(title: "Next Action", icon: "bolt") {
-            Button { _ = store.createElementFromCurrentTarget() } label: {
-                Label("Capture", systemImage: "square.and.arrow.down")
-            }
-        }
-    }
 }
 
 struct InspectorSection<Content: View>: View {
