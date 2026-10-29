@@ -34,7 +34,11 @@ and are no longer written as parallel stores.
 
 Review labels distinguish Verified, Unverified, Blocked, Needs Recapture, and
 Legacy Script records. Inherited script commands remain managed by their existing
-implementations; blocked captures are visible but not bound. See the
+implementations. Deleting one removes its row and stores an app-scoped
+`disabledLegacyShortcuts` rule in the same registry; the semantic and context-menu
+dispatchers consult those rules before running. The shared script file remains
+available to other routes. Removing an app disables all its inherited shortcuts
+as well as removing its captured actions. Blocked captures are visible but not bound. See the
 [migration receipt](../../docs/2026-10-29-per-app-registry.md).
 
 ## Current Global Shortcuts

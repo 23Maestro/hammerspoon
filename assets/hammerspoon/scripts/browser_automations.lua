@@ -247,12 +247,16 @@ local function walkAx(element, predicate, depth, seen)
     return nil
   end
 
-  seen = seen or {}
-  local identity = tostring(element)
-  if seen[identity] then
-    return nil
+  seen = seen or { elements = {}, deadline = hs.timer.absoluteTime() + 750000000 }
+  if #seen.elements >= 1000 or hs.timer.absoluteTime() >= seen.deadline then
+    return nil, "ax-search-budget-exceeded"
   end
-  seen[identity] = true
+  -- AX attributes can return new wrappers for the same control. __eq uses
+  -- CFEqual; tostring contains the wrapper address and cannot identify cycles.
+  for _, visited in ipairs(seen.elements) do
+    if element == visited then return nil end
+  end
+  table.insert(seen.elements, element)
 
   if predicate(element) then
     return element
@@ -264,10 +268,11 @@ local function walkAx(element, predicate, depth, seen)
     end)
     if ok and type(children) == "table" then
       for _, child in ipairs(children) do
-        local found = walkAx(child, predicate, depth - 1, seen)
+        local found, searchError = walkAx(child, predicate, depth - 1, seen)
         if found then
           return found
         end
+        if searchError then return nil, searchError end
       end
     end
   end
@@ -1251,9 +1256,11 @@ local function findLocalActionElement(action)
     end
   end
 
-  local found = walkAx(root, matches, 24)
+  -- Nested web-app controls can be deeper than 24 (ChatGPT Dictate: 31).
+  -- The shared node/time budget bounds work even with this larger depth.
+  local found, searchError = walkAx(root, matches, 64)
   if found then resolvedLocalTargets[key] = found end
-  return found, nil
+  return found, searchError
 end
 
 local function clickLocalActionFrame(action)
@@ -1411,6 +1418,21 @@ local function readElementActions(registryPath)
     if not ok or type(registry) ~= "table" or registry.schemaVersion ~= 1 or type(registry.apps) ~= "table" then
       return invalid("Invalid or unsupported registry JSON")
     end
+    local disabled = registry.disabledLegacyShortcuts or {}
+    if type(disabled) ~= "table" then return invalid("Invalid deleted legacy shortcut rules") end
+    local allowedModifiers = { ctrl=true, alt=true, cmd=true, shift=true, fn=true }
+    for _, rule in ipairs(disabled) do
+      if type(rule) ~= "table" or type(rule.id) ~= "string" or rule.id == ""
+        or type(rule.appBundleID) ~= "string" or rule.appBundleID == ""
+        or type(rule.key) ~= "string" or rule.key == "" or type(rule.modifiers) ~= "table" then
+        return invalid("Invalid deleted legacy shortcut rule")
+      end
+      local seenModifiers = {}
+      for _, modifier in ipairs(rule.modifiers) do
+        if not allowedModifiers[modifier] or seenModifiers[modifier] then return invalid("Invalid deleted legacy shortcut modifiers") end
+        seenModifiers[modifier] = true
+      end
+    end
     local actions, parents = {}, {}
     local skipped = 0
     for _, app in ipairs(registry.apps) do
@@ -1443,9 +1465,9 @@ local function readElementActions(registryPath)
         end
       end
     end
-    return actions, { source = "canonical", path = path, runnable = #actions, skipped = skipped }
-  elseif registryPath then
-    return {}, { source = "canonical", path = path, error = "Registry file missing" }
+    return actions, { source = "canonical", path = path, runnable = #actions, skipped = skipped, disabledLegacyShortcuts = disabled }
+  elseif registryPath or hs.fs.symlinkAttributes(path) then
+    return {}, { source = "canonical", path = path, error = "Canonical registry is missing or unreadable" }
   end
 
   -- Read-only compatibility before XSpoon performs the one-time migration.
@@ -1476,6 +1498,22 @@ end
 function M.registryStatus()
   local _, status = readElementActions()
   return status
+end
+
+function M.isLegacyShortcutDisabled(bundleID, modifiers, key, registryPath)
+  local _, info = readElementActions(registryPath)
+  if not info or info.error then return true end
+  local wanted = {}
+  for _, modifier in ipairs(modifiers or {}) do table.insert(wanted, modifier) end
+  table.sort(wanted)
+  for _, rule in ipairs(info.disabledLegacyShortcuts or {}) do
+    local configured = {}
+    for _, modifier in ipairs(rule.modifiers) do table.insert(configured, modifier) end
+    table.sort(configured)
+    if rule.appBundleID == bundleID and rule.key:lower() == tostring(key):lower()
+      and table.concat(wanted, "+") == table.concat(configured, "+") then return true end
+  end
+  return false
 end
 
 function M.actionsForApp(bundleID)
@@ -2403,7 +2441,12 @@ function M.bindHotkeys()
 end
 
 function M.bindContextMenuHotkey()
-  hs.hotkey.bind({ "ctrl", "alt" }, "m", M.openFocusedLocalContextMenu)
+  hs.hotkey.bind({ "ctrl", "alt" }, "m", function()
+    local app = hs.application.frontmostApplication()
+    if not M.isLegacyShortcutDisabled(app and app:bundleID() or "", { "ctrl", "alt" }, "m") then
+      return M.openFocusedLocalContextMenu()
+    end
+  end)
 end
 
 return M

@@ -127,35 +127,15 @@ local function pressKeystrokeSearchToggle()
   return true
 end
 
-local function hasModifiers(event)
-  local flags = event:getFlags()
-  return flags.cmd or flags.alt or flags.ctrl or flags.shift or flags.fn
-end
-
 function M.start()
   if watcher then
     watcher:stop()
   end
-
-  watcher = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(event)
-    if hasModifiers(event) then
-      return false
-    end
-
-    local keyCode = event:getKeyCode()
-    if keyCode == hs.keycodes.map.s then
-      return focusSearchField()
-    end
-
-    if keyCode == hs.keycodes.map["'"] then
-      return pressKeystrokeSearchToggle()
-    end
-
-    return false
-  end)
-
-  watcher:start()
-  codexShortcutSearchWatcher = watcher
+  if codexShortcutSearchWatcher then codexShortcutSearchWatcher:stop() end
+  watcher = nil
+  codexShortcutSearchWatcher = nil
+  -- init.lua still calls start; actions now run only through the modifier-key
+  -- dispatcher. Never install a listener that consumes ordinary typing.
 end
 
 M.actions = {

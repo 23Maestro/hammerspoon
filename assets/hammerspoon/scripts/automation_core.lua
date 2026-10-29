@@ -66,6 +66,9 @@ end
 function M.bind(bindings)
   for _, binding in ipairs(bindings or {}) do
     hs.hotkey.bind(binding.modifiers, binding.key, function()
+      local browser = require("scripts.browser_automations")
+      local context = currentContext()
+      if browser.isLegacyShortcutDisabled(context.bundleID, binding.modifiers, binding.key) then return end
       M.dispatch(binding.action)
     end)
   end

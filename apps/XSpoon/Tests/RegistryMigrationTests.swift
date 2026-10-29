@@ -2,6 +2,47 @@ import XCTest
 @testable import XSpoonMenu
 
 final class RegistryMigrationTests: XCTestCase {
+    func testRemovingAnAppDisablesItsLegacyRoutesAndRemovesItsCapturedActions() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let app = MyAppDefinition(id: "chat", name: "Chat", bundleIdentifier: "test.chat", icon: "app", shortcuts: [
+            AppShortcut(id: "search", action: "Search", key: "S", modifierID: "right-command"),
+            AppShortcut(id: "copy", action: "Copy", key: "C", modifierID: "right-command")
+        ])
+        let other = MyAppDefinition(id: "other", name: "Other", bundleIdentifier: "test.other", icon: "app")
+        let client = HammerspoonClient(home: home)
+        _ = try client.loadRegistry(legacyApps: [app, other])
+        try client.saveElementAction(app: app, shortcut: AppShortcut(id: "dictate", action: "Dictate", key: "D", modifierID: "right-command"),
+            snapshot: ElementSnapshot(bundleID: app.bundleIdentifier, role: "AXButton", axDescription: "Dictate", actions: ["AXPress"]))
+        try client.deleteElementActions(for: app)
+        let registry = try HammerspoonClient(home: home).loadRegistry()
+        XCTAssertEqual(registry.apps.map(\.id), ["other"])
+        XCTAssertTrue(registry.capturedActions.isEmpty)
+        XCTAssertEqual(Set(registry.disabledLegacyShortcuts?.map(\.key) ?? []), ["s", "c"])
+        XCTAssertTrue(registry.disabledLegacyShortcuts?.allSatisfy { $0.appBundleID == app.bundleIdentifier } == true)
+    }
+
+    func testDeletingLegacyShortcutRemovesRowAndPersistsOnlyItsAppScopedDisableRule() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let legacy = AppShortcut(id: "search", action: "Search", key: "S", modifierID: "right-command")
+        let app = MyAppDefinition(id: "chat", name: "Chat", bundleIdentifier: "test.chat", icon: "app", shortcuts: [legacy])
+        let other = MyAppDefinition(id: "other", name: "Other", bundleIdentifier: "test.other", icon: "app",
+            shortcuts: [AppShortcut(id: "other-search", action: "Search", key: "S", modifierID: "right-command")])
+        let client = HammerspoonClient(home: home)
+        _ = try client.loadRegistry(legacyApps: [app, other])
+        try client.deleteElementAction(id: legacy.id)
+        let relaunched = try HammerspoonClient(home: home).loadRegistry()
+        XCTAssertTrue(relaunched.apps.first(where: { $0.id == app.id })!.actions.isEmpty)
+        XCTAssertEqual(relaunched.apps.first(where: { $0.id == other.id })?.actions.first?.id, "other-search")
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(relaunched)) as! [String: Any]
+        let rules = try XCTUnwrap(encoded["disabledLegacyShortcuts"] as? [[String: Any]])
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules[0]["appBundleID"] as? String, "test.chat")
+        XCTAssertEqual(rules[0]["key"] as? String, "s")
+        XCTAssertEqual(rules[0]["modifiers"] as? [String], ["alt", "ctrl"])
+    }
+
     @MainActor
     func testUIReadsSavedActionsAndDeletionDoesNotReimportLegacyCatalog() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

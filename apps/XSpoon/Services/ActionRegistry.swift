@@ -60,10 +60,18 @@ struct RegistryApp: Codable, Equatable, Identifiable {
     }
 }
 
+struct DisabledLegacyShortcut: Codable, Equatable {
+    var id: String
+    var appBundleID: String
+    var modifiers: [String]
+    var key: String
+}
+
 struct ActionRegistry: Codable, Equatable {
     var schemaVersion = 1
     var apps: [RegistryApp] = []
     var migrationBackup: String?
+    var disabledLegacyShortcuts: [DisabledLegacyShortcut]?
 
     var capturedActions: [ElementAction] { apps.flatMap { $0.actions.compactMap(\.payload) } }
     var runnableActions: [ElementAction] { apps.flatMap { $0.actions.filter(\.runnable).compactMap(\.payload) } }
@@ -204,6 +212,13 @@ struct ActionRegistryStore {
 
     private func validate(_ registry: ActionRegistry) throws {
         guard registry.schemaVersion == 1 else { throw RegistryError("Unsupported XSpoon registry version") }
+        for rule in registry.disabledLegacyShortcuts ?? [] {
+            guard !rule.id.isEmpty, !rule.appBundleID.isEmpty, !rule.key.isEmpty,
+                  Set(rule.modifiers).count == rule.modifiers.count,
+                  rule.modifiers.allSatisfy({ ["ctrl", "alt", "cmd", "shift", "fn"].contains($0) }) else {
+                throw RegistryError("Invalid deleted legacy shortcut rule")
+            }
+        }
         guard Set(registry.apps.map(\.bundleIdentifier)).count == registry.apps.count,
               Set(registry.apps.map(\.id)).count == registry.apps.count else {
             throw RegistryError("Duplicate app parents in XSpoon registry")

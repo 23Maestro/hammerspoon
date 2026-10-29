@@ -109,8 +109,12 @@ struct HammerspoonClient {
 
     func deleteElementAction(id: String) throws {
         var registry = try loadRegistry()
-        if registry.apps.flatMap(\.actions).contains(where: { $0.id == id && $0.origin == "legacyCommand" }) {
-            throw RegistryError("Inherited commands are managed by their existing Hammerspoon script")
+        for app in registry.apps {
+            for record in app.actions where record.id == id {
+                if let shortcut = record.legacyShortcut {
+                    try disableLegacyShortcut(shortcut, bundleID: app.bundleIdentifier, in: &registry)
+                }
+            }
         }
         for index in registry.apps.indices { registry.apps[index].actions.removeAll { $0.id == id } }
         try ActionRegistryStore(directory: hammerspoonDirectory).save(registry)
@@ -118,8 +122,30 @@ struct HammerspoonClient {
 
     func deleteElementActions(for app: MyAppDefinition) throws {
         var registry = try loadRegistry()
+        for parent in registry.apps where parent.bundleIdentifier == app.bundleIdentifier {
+            for record in parent.actions {
+                if let shortcut = record.legacyShortcut {
+                    try disableLegacyShortcut(shortcut, bundleID: parent.bundleIdentifier, in: &registry)
+                }
+            }
+        }
         registry.apps.removeAll { $0.bundleIdentifier == app.bundleIdentifier }
         try ActionRegistryStore(directory: hammerspoonDirectory).save(registry)
+    }
+
+    private func disableLegacyShortcut(_ shortcut: AppShortcut, bundleID: String, in registry: inout ActionRegistry) throws {
+        let preset = ModifierCatalog.preset(shortcut.modifierID)
+        guard !bundleID.isEmpty, !shortcut.key.isEmpty,
+              !preset.hammerspoonModifiers.isEmpty || preset.id == ModifierCatalog.singleKey.id else {
+            throw RegistryError("Cannot safely disable this legacy shortcut: missing app, key or modifier")
+        }
+        var rules = registry.disabledLegacyShortcuts ?? []
+        let modifiers = preset.hammerspoonModifiers.sorted()
+        let key = shortcut.key.lowercased()
+        if !rules.contains(where: { $0.appBundleID == bundleID && $0.modifiers.sorted() == modifiers && $0.key == key }) {
+            rules.append(DisabledLegacyShortcut(id: shortcut.id, appBundleID: bundleID, modifiers: modifiers, key: key))
+        }
+        registry.disabledLegacyShortcuts = rules
     }
 
     private func validateHotkey(_ action: ElementAction, against actions: [ElementAction]) throws {

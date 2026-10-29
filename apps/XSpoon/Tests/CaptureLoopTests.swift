@@ -2,6 +2,31 @@ import XCTest
 @testable import XSpoonMenu
 
 final class CaptureLoopTests: XCTestCase {
+    func testAppScopedDictateChordRejectsAConflictButCanBeReusedInAnotherApp() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let client = HammerspoonClient(home: home)
+        let app = MyAppDefinition(id: "chat", name: "Chat", bundleIdentifier: "test.chat", icon: "app")
+        let snapshot = ElementSnapshot(bundleID: app.bundleIdentifier, role: "AXButton", axTitle: "Dictate", axDescription: "Dictate", actions: ["AXPress"])
+        let shortcut = AppShortcut(id: "dictate", action: "Dictate", key: "D", modifierID: "right-command")
+        let original = try client.saveElementAction(app: app, shortcut: shortcut, snapshot: snapshot)
+        var differentControl = snapshot
+        differentControl.axTitle = "Different control"
+        differentControl.axDescription = "Different control"
+        XCTAssertThrowsError(try client.saveElementAction(app: app,
+            shortcut: AppShortcut(id: "conflict", action: "Different control", key: "D", modifierID: "right-command"), snapshot: differentControl))
+        XCTAssertEqual(try HammerspoonClient(home: home).readElementActions(), [original])
+        let otherApp = MyAppDefinition(id: "other", name: "Other", bundleIdentifier: "test.other", icon: "app")
+        var otherSnapshot = snapshot
+        otherSnapshot.bundleID = otherApp.bundleIdentifier
+        let reused = try client.saveElementAction(app: otherApp,
+            shortcut: AppShortcut(id: "other-dictate", action: "Dictate", key: "D", modifierID: "right-command"), snapshot: otherSnapshot)
+        XCTAssertEqual(reused.hotkey, original.hotkey)
+        let relaunched = HammerspoonClient(home: home)
+        XCTAssertEqual(try relaunched.readElementActions().count, 2)
+        XCTAssertEqual(try relaunched.loadRegistry().apps.first?.actions.first?.payload, original)
+    }
+
     @MainActor
     func testRegistrationFailurePreservesItsErrorAndSavedRecordForRetry() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

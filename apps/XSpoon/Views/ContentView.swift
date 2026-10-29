@@ -157,7 +157,7 @@ struct MyAppsSettingsView: View {
                 appPendingDeletion = nil
             }
         } message: { app in
-            Text("Remove \(app.name) and its saved captures from XSpoon? Inherited script commands are not changed.")
+            Text("Remove \(app.name) and disable its shortcuts?")
         }
     }
 }
@@ -206,8 +206,7 @@ struct ShortcutCard: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .disabled(shortcut.origin == "legacyCommand")
-            .help(shortcut.origin == "legacyCommand" ? "Managed by an existing Hammerspoon script" : "Delete shortcut")
+            .help("Delete shortcut")
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
